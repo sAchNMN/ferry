@@ -18,7 +18,9 @@ import { defineStore, defineImporter } from '../../src/core/adapter.js';
 async function tmpAdapterDir(files) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ferry-discovery-'));
   for (const [name, content] of Object.entries(files)) {
-    await fs.writeFile(path.join(dir, name), content, 'utf8');
+    const target = path.join(dir, name);
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.writeFile(target, content, 'utf8');
   }
   return dir;
 }
@@ -65,6 +67,35 @@ test('装配点：重复 id 必须直接报错，而不是静默覆盖', async (
   });
   await assert.rejects(() => discoverAdapters(dir), /id 重复/);
   await fs.rm(dir, { recursive: true, force: true });
+});
+
+test('装配点：支持一层子目录，origin 用 / 分隔', async () => {
+  const dir = await tmpAdapterDir({
+    'exports/vendor-a.js': `export default { id: 'vendor-a', kind: 'importer', name: 'A', extensions: ['.json'], detect: () => false, read: () => [] };`,
+    'exports/_hidden.js': `export default { id: 'hidden', kind: 'importer', name: 'H', detect: () => false, read: () => [] };`,
+    'exports/_nested/deep.js': `export default { id: 'deep', kind: 'importer', name: 'D', detect: () => false, read: () => [] };`,
+  });
+  const found = await discoverAdapters(dir);
+  assert.deepEqual(found.importers.map((i) => i.id), ['vendor-a']);
+  assert.equal(found.origin.get('vendor-a'), 'exports/vendor-a.js');
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+test('装配点：同一对象的 re-export 不算重复', async () => {
+  const dir = await tmpAdapterDir({
+    'real.js': `export const shared = { id: 'shared', kind: 'store', name: 'S', scan: async () => [], read: async () => null };`,
+    'shim.js': `export { shared as default, shared as named } from './real.js';`,
+  });
+  const found = await discoverAdapters(dir);
+  assert.deepEqual(found.stores.map((s) => s.id), ['shared']);
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+test('契约：导出包导入器位于 exports/ 子目录', () => {
+  const exportIds = ['chatgpt-export', 'claude-export', 'generic-json', 'markdown'];
+  for (const id of exportIds) {
+    assert.ok(origin.get(id)?.startsWith('exports/'), `${id} 应位于 exports/ 子目录，实际：${origin.get(id)}`);
+  }
 });
 
 test('契约：store 必须具备 scan/read，且 capabilities 齐全', () => {
