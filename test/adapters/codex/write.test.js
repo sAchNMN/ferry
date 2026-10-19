@@ -16,6 +16,7 @@ import path from 'node:path';
 
 import { collectForExport, importConversations } from '../../../src/core/migrate.js';
 import { freshDir, makeEnv, seedClaude } from '../../helpers.js';
+import { getStore } from '../../../src/core/registry.js';
 
 async function importToCodex() {
   const homeA = await freshDir('codex-format-src');
@@ -65,7 +66,16 @@ test('session_meta：对齐真实文件的全部结构字段', async () => {
   assert.ok(Array.isArray(meta.runtime_workspace_roots), 'runtime_workspace_roots 必须是数组');
   assert.equal(meta.runtime_workspace_roots[0], meta.cwd, '工作区根应与 cwd 一致');
   assert.equal(typeof meta.base_instructions, 'object');
-  assert.equal(meta.base_instructions.provenance, 'ferry-import', '基础指令来自导入，应标明来源而不是伪造内容');
+  // 这里以前断言 `provenance === 'ferry-import'`，等于把"codex 读不了"的格式锁死在测试里。
+  // 2026-10-19 用 `codex migrate-rollouts` 实测：provenance 是枚举，只认已知 type
+  // （`{type:'model', model:'...'}` 通过，`'ferry-import'` 失败），且 model 必填；
+  // 整个字段省略或写 null 则通过。字段不合法时 codex 报「does not start with session metadata」，
+  // 整条会话在它眼里不存在 —— 而我们的扫描器却读得出来，所以这种错误不会被自家测试发现。
+  const provenance = meta.base_instructions.provenance;
+  assert.ok(
+    provenance === undefined || provenance === null,
+    `provenance 不能编造，codex 只接受已知枚举值；实际写了：${JSON.stringify(provenance)}`,
+  );
   assert.ok(meta.context_window && typeof meta.context_window.window_id === 'string');
   assert.ok(sessionId === 'undefined' || typeof sessionId === 'string');
 });
@@ -114,4 +124,22 @@ test('回归：写回后仍能被扫描到（不能为了对齐格式把可读�
   const { res } = await importToCodex();
   assert.equal(res.results[0].error, null);
   assert.ok((res.results[0].writes || []).some((w) => w.path.endsWith('session_index.jsonl')), '应更新 session_index');
+});
+
+/**
+ * 2026-10-19 真机验证时踩到：Codex 的 import 返回值只在 `resume` 里带了 id，
+ * 没给顶层 `sessionId`。于是导入台账记的是 `sessionId: null`，
+ * 回滚时按 id 清理台账全部匹配失败 —— 用户回滚完再导一次，被幂等提示"已导入过"，
+ * 但目标里根本没有那个会话。
+ */
+test('导入：返回值必须带顶层 sessionId（台账与回滚都依赖它）', async () => {
+  const homeA = await freshDir('codex-sid-src');
+  const homeB = await freshDir('codex-sid-dst');
+  await seedClaude(homeA, '/home/u/proj');
+  const collected = await collectForExport(makeEnv(homeA), { agents: ['claude-code'], redact: false });
+
+  const out = await getStore('codex').import(makeEnv(homeB), collected.conversations[0], { workspace: 'D:\\work\\demo' });
+  assert.equal(typeof out.sessionId, 'string', '顶层 sessionId 不能缺，否则台账记死账');
+  assert.match(out.sessionId, /^[0-9a-f]{8}-[0-9a-f-]{27}$/);
+  assert.ok(out.resume.command.includes(out.sessionId), 'resume 命令里的 id 必须与之一致');
 });

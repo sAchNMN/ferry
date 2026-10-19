@@ -222,8 +222,16 @@ export default defineStore({
       thread_source: 'user',
       model_provider: 'openai',
       history_mode: 'paginated',
-      // 真实文件里是完整系统提示。这里不伪造内容，留空并标明来源。
-      base_instructions: { text: '', provenance: 'ferry-import' },
+      // 真实文件里是完整系统提示。这里不伪造内容，留空。
+      //
+      // provenance 整个省略是刻意的（2026-10-19 用 `codex migrate-rollouts` 实测出来的）：
+      // 它是**枚举**，只接受已知值（实测 `type: "model"` 通过，`"ferry-import"` 失败）；
+      // 而且 `model` 字段必填，只写 `{type}` 也会失败。字段本身可省略（写 null 也通过）。
+      // 与其谎报"这段系统提示来自某个模型"，不如不写：我们没有这段内容的来源。
+      //
+      // 报错信息有误导性：字段不合法时 codex 报的是 "does not start with session metadata"，
+      // 容易让人以为 type 字段错了，实际是整行反序列化失败。
+      base_instructions: { text: '' },
       context_window: { window_id: sessionId },
     });
 
@@ -305,6 +313,7 @@ export default defineStore({
         ],
         notes: ['模拟模式：未写入'],
         resume: { cwd, command: `codex resume ${sessionId}`, sessionId },
+        sessionId,
       };
     }
 
@@ -345,6 +354,9 @@ export default defineStore({
       ],
       notes,
       resume: { cwd, command: `codex resume ${sessionId}`, sessionId },
+      // 顶层 sessionId 不是装饰：导入台账要靠它记「这个会话导到哪去了」，
+      // 回滚时也靠它把台账条目摘掉。漏了它，台账里全是 null，回滚后重导会被幂等挡住。
+      sessionId,
     };
   },
 

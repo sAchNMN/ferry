@@ -10,6 +10,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { ensureDir, exists, formatBytes, nowIso, readJson, sha256, shortHash, writeJson } from './util.js';
 import { backupsDir } from './env.js';
+import { forgetImports } from './ledger.js';
 
 /** 只对 SQLite 数据库文件派生 WAL / SHM 边车，避免给普通文本文件凭空造条目。 */
 const SQLITE_EXT = new Set(['.db', '.sqlite', '.sqlite3']);
@@ -89,6 +90,26 @@ export async function listBackups(env) {
   return out.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 }
 
+/**
+ * 从被删掉的路径里反推会话 id。
+ *
+ * 新备份的清单里有 `imported`（指纹 + sessionId），直接可用。
+ * 但**旧备份没有这个字段**（2026-10-19 之前的版本），如果只认 imported，
+ * 回滚旧备份后重导还是会被台账挡住。两种会话文件名都以 UUID 结尾，兜底从这里取：
+ *   WorkBuddy  projects/<slug>/<uuid>.jsonl
+ *   Codex      sessions/2026/10/19/rollout-2026-10-19T13-40-34-<uuid>.jsonl
+ */
+const UUID_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
+
+function sessionIdsFromPaths(paths) {
+  const ids = new Set();
+  for (const p of paths) {
+    const hit = UUID_RE.exec(path.basename(p));
+    if (hit) ids.add(hit[1]);
+  }
+  return [...ids];
+}
+
 export async function rollback(env, id) {
   const root = backupsDir(env);
   let target = path.join(root, id);
@@ -115,7 +136,16 @@ export async function rollback(env, id) {
       results.push({ path: f.path, action: 'failed', error: err.message });
     }
   }
-  return { manifest, results };
+
+  // 台账跟着回滚：被删掉的会话如果还留在"已导入"名单里，下次导入会被幂等直接跳过，
+  // 用户看到"已导入过"却找不到会话。旧备份没有 imported 字段，用文件名兜底反推。
+  // imported 里也可能是 null（适配器曾漏返顶层 sessionId），过滤后再判断一次。
+  const removedPaths = results.filter((r) => r.action === 'removed').map((r) => r.path);
+  const fromManifest = (manifest.imported || []).map((entry) => entry.sessionId).filter(Boolean);
+  const sessionIds = fromManifest.length ? fromManifest : sessionIdsFromPaths(removedPaths);
+  const forgotten = await forgetImports(env, manifest.target, sessionIds);
+
+  return { manifest, results, forgotten };
 }
 
 export async function pruneBackups(env, keep = 10) {

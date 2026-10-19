@@ -546,7 +546,8 @@ async function cmdRollback({ env, rest, log }) {
   const failed = res.results.filter((r) => r.action === 'failed');
 
   if (!failed.length) {
-    log.success(`已回滚 ${res.manifest.id}：恢复 ${restored} 个文件，删除 ${removed} 个新建文件`);
+    const forgot = res.forgotten ? `，并从导入台账移除 ${res.forgotten} 条` : '';
+    log.success(`已回滚 ${res.manifest.id}：恢复 ${restored} 个文件，删除 ${removed} 个新建文件${forgot}`);
     return;
   }
 

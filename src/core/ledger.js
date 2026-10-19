@@ -47,6 +47,36 @@ export function lookupImport(ledger, target, fingerprint) {
 }
 
 /**
+ * 回滚后清账。
+ *
+ * 不清理会怎样：`ferry rollback` 删掉了目标里的会话，但台账还记着"已导入"，
+ * 于是再导一次直接被幂等跳过（提示"已导入过"），用户会以为导入坏了。
+ * 2026-10-19 验证 Codex 时踩到过这个。
+ *
+ * 只按 sessionId 匹配，认不出的一律留着重试无害（台账是缓存，不是真相）。
+ */
+export async function forgetImports(env, target, sessionIds) {
+  const ids = new Set((sessionIds || []).filter(Boolean));
+  if (!ids.size || !target) return 0;
+  const ledger = await readLedger(env);
+  const bucket = ledger.targets?.[target];
+  if (!bucket) return 0;
+
+  let removed = 0;
+  for (const [fingerprint, entry] of Object.entries(bucket)) {
+    if (entry && ids.has(entry.sessionId)) {
+      delete bucket[fingerprint];
+      removed += 1;
+    }
+  }
+  if (removed) {
+    ledger.updatedAt = nowIso();
+    await writeJson(ledgerPath(env), ledger);
+  }
+  return removed;
+}
+
+/**
  * 批量登记一次导入的结果。
  * @param {object} env
  * @param {string} target 目标适配器 id

@@ -88,6 +88,33 @@ test('写回 Codex：session_meta 字段需与真实 rollout 对齐', async () =
   }
 });
 
+/**
+ * 2026-10-19 用 `codex migrate-rollouts` 实测出来的硬约束。
+ *
+ * `base_instructions.provenance` 是**枚举**：`{type:"model", model:"..."}` 通过，
+ * `{type:"ferry-import"}` 不管 model 怎么给都失败；`{type:"model"}` 缺 model 也失败；
+ * 整个字段省略或写 null 则通过。
+ *
+ * 踩坑过程值得记住：字段不合法时 codex 报的是
+ * 「does not start with session metadata」—— 看起来像 type 字段写错了，
+ * 实际是整行 serde 反序列化失败。而**我们自己的扫描器能读得出来**，
+ * 所以"结构对齐 + 我们能读"永远不能替代"对方应用真的点开"。
+ */
+test('写回 Codex：base_instructions.provenance 不能编造（枚举 + model 必填）', async () => {
+  const { records } = await writeCodexRollout();
+  const bi = records[0].payload.base_instructions;
+  assert.equal(typeof bi.text, 'string', 'base_instructions.text 必须是字符串');
+
+  if ('provenance' in bi && bi.provenance !== null) {
+    assert.equal(typeof bi.provenance, 'object', 'provenance 不能写成字符串，codex 会整行反序列化失败');
+    assert.ok(
+      ['model'].includes(bi.provenance.type),
+      `provenance.type 必须是 codex 认识的枚举值，实际写的是：${bi.provenance.type}`,
+    );
+    assert.equal(typeof bi.provenance.model, 'string', 'provenance.model 必填，缺了同样失败');
+  }
+});
+
 test('写回 Codex：response_item 需带 id 与会话元数据（status/summary 属 reasoning 条目，不在此列）', async () => {
   const { records } = await writeCodexRollout();
   for (const r of records.filter((x) => x.type === 'response_item')) {

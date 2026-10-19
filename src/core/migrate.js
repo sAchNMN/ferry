@@ -564,7 +564,9 @@ export async function importConversations(env, conversations, opts = {}) {
         toRecord[fingerprint] = {
           at: nowIso(),
           workspace: ws.cwd,
-          sessionId: res.sessionId || null,
+          // 适配器可能只在 resume 里带 id（Codex 就这样漏过一次），这里兜一层：
+          // 台账没有 sessionId 就等于记了个死账，回滚时摘不掉，重导会被幂等挡住。
+          sessionId: res.sessionId || res.resume?.sessionId || null,
           resumeCommand: res.resume?.command || null,
         };
       }
@@ -601,6 +603,10 @@ export async function importConversations(env, conversations, opts = {}) {
     for (const p of createdPaths) {
       manifest.files.push({ path: p, existed: false, backup: null, bytes: 0, kind: 'created' });
     }
+    // 同时记下"这次导入登记了哪些会话"：回滚要把台账里对应的记录一起摘掉，
+    // 否则回滚后再导一次会被幂等直接跳过（用户看到的是"已导入过"，实际目标里啥也没有）。
+    const imported = Object.entries(toRecord).map(([fingerprint, v]) => ({ fingerprint, sessionId: v.sessionId }));
+    if (imported.length) manifest.imported = imported;
     await writeJson(manifestPath, manifest);
     backupInfo.manifest = manifest;
   }
