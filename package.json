@@ -1,0 +1,40 @@
+{
+  "name": "ferry-agent-port",
+  "version": "0.1.0",
+  "description": "Ferry — 把 AI Agent 的对话历史从一台电脑摆渡到另一台，并直接接着聊。",
+  "type": "module",
+  "bin": {
+    "ferry": "./bin/ferry.js"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node bin/ferry.js",
+    "ui": "node bin/ferry.js ui",
+    "test": "node --test test/core.test.js test/adapters.test.js",
+    "test:noiso": "node --test --test-isolation=none test/core.test.js test/adapters.test.js",
+    "test:watch": "node --test --watch test/core.test.js test/adapters.test.js",
+    "selftest": "node bin/ferry.js doctor",
+    "package": "node scripts/package.mjs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "docs",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "ai-agent",
+    "chat-history",
+    "migration",
+    "claude-code",
+    "codex",
+    "cursor",
+    "copilot",
+    "backup"
+  ],
+  "license": "MIT",
+  "private": true
+}

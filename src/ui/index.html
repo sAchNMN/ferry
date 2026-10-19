@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ferry · AI 会话摆渡</title>
+    <link rel="stylesheet" href="/assets/style.css" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%235b6cff'/%3E%3Cpath d='M14 38h36l-6 12H20z' fill='white'/%3E%3Cpath d='M32 12v22M32 16l10 8M32 16l-10 8' stroke='white' stroke-width='4' stroke-linecap='round' fill='none'/%3E%3C/svg%3E"
+    />
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="logo">⛴</div>
+          <div>
+            <div class="brand-name">Ferry</div>
+            <div class="brand-sub">AI 会话摆渡</div>
+          </div>
+        </div>
+
+        <nav class="nav" id="nav">
+          <button class="nav-item active" data-view="dashboard">
+            <span class="ico">◎</span><span>总览</span>
+          </button>
+          <button class="nav-item" data-view="export">
+            <span class="ico">↗</span><span>导出</span>
+          </button>
+          <button class="nav-item" data-view="import">
+            <span class="ico">↙</span><span>导入</span>
+          </button>
+          <button class="nav-item" data-view="archive">
+            <span class="ico">▤</span><span>归档</span>
+          </button>
+          <button class="nav-item" data-view="settings">
+            <span class="ico">⚙</span><span>设置</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-foot">
+          <div class="env" id="env-line">检测环境中…</div>
+          <div class="privacy">数据只在本机处理<br />不上传任何服务器</div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <h1 id="page-title">总览</h1>
+            <p class="subtitle" id="page-sub">看看这台电脑上装了多少个 AI Agent，存了多少对话。</p>
+          </div>
+          <div class="topbar-actions" id="topbar-actions"></div>
+        </header>
+
+        <section class="view" id="view-dashboard">
+          <div class="stat-row" id="stat-row"></div>
+          <div class="section-head">
+            <h2>本机 Agent</h2>
+            <button class="btn ghost sm" id="btn-rescan">重新扫描</button>
+          </div>
+          <div class="agent-grid" id="agent-grid"></div>
+          <div class="callout" id="scan-hint"></div>
+        </section>
+
+        <section class="view hidden" id="view-export">
+          <div class="panel">
+            <div class="panel-head">
+              <h2>选择要导出的 Agent</h2>
+              <div class="bulk">
+                <button class="btn ghost sm" id="btn-select-all">全选</button>
+                <button class="btn ghost sm" id="btn-select-none">全不选</button>
+              </div>
+            </div>
+            <div class="checklist" id="export-agents"></div>
+          </div>
+
+          <div class="panel">
+            <h2>选项</h2>
+            <div class="form-grid">
+              <label class="field">
+                <span>时间范围</span>
+                <select id="export-since">
+                  <option value="">全部时间</option>
+                  <option value="1d">最近 1 天</option>
+                  <option value="7d">最近 7 天</option>
+                  <option value="30d">最近 30 天</option>
+                  <option value="90d">最近 90 天</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>数量上限</span>
+                <input id="export-limit" type="number" min="0" placeholder="0 = 不限制" />
+              </label>
+              <label class="field">
+                <span>归档名称</span>
+                <input id="export-label" type="text" placeholder="例如：换电脑前的备份" />
+              </label>
+              <label class="field switch-field">
+                <span>自动脱敏</span>
+                <input type="checkbox" id="export-redact" checked />
+                <em>把 API Key / Token 替换为 [REDACTED]</em>
+              </label>
+              <label class="field switch-field">
+                <span>加密归档</span>
+                <input type="checkbox" id="export-encrypt" />
+                <em>AES-256-GCM，换机时需输入密码</em>
+              </label>
+              <label class="field" id="password-field" style="display: none">
+                <span>密码</span>
+                <input id="export-password" type="password" placeholder="至少 8 位，建议 12 位以上" />
+              </label>
+            </div>
+            <div class="actions">
+              <button class="btn primary" id="btn-export">打包导出</button>
+              <span class="hint" id="export-hint"></span>
+            </div>
+          </div>
+
+          <div class="panel hidden" id="export-result"></div>
+        </section>
+
+        <section class="view hidden" id="view-import">
+          <div class="panel">
+            <h2>选择备份文件</h2>
+            <div class="dropzone" id="dropzone">
+              <input type="file" id="file-input" accept=".ferrypack,.zip,.json,.md,.txt" hidden />
+              <div class="drop-ico">⇩</div>
+              <div class="drop-title">把 .ferrypack / ChatGPT / Claude 导出包拖到这里</div>
+              <div class="drop-sub">或 <button class="link" id="btn-browse">选择文件</button> · 支持 .ferrypack、.zip、.json、.md</div>
+            </div>
+            <div class="file-info hidden" id="file-info"></div>
+            <div class="field password-inline hidden" id="import-password-row">
+              <span>归档密码</span>
+              <input id="import-password" type="password" placeholder="输入加密归档的密码" />
+              <button class="btn ghost sm" id="btn-unlock">解锁</button>
+            </div>
+          </div>
+
+          <div class="panel hidden" id="pack-panel">
+            <div class="panel-head">
+              <h2>归档内容 <span class="pill" id="pack-count"></span></h2>
+              <div class="bulk">
+                <button class="btn ghost sm" id="btn-conv-all">全选</button>
+                <button class="btn ghost sm" id="btn-conv-none">全不选</button>
+              </div>
+            </div>
+            <div class="conv-list" id="conv-list"></div>
+          </div>
+
+          <div class="panel hidden" id="import-target-panel">
+            <h2>迁移到</h2>
+            <div class="form-grid">
+              <label class="field">
+                <span>目标 Agent</span>
+                <select id="import-target"></select>
+              </label>
+              <label class="field">
+                <span>项目目录（可选）</span>
+                <input id="import-workspace" type="text" placeholder="留空 = 沿用原路径；不存在则落到当前目录" />
+              </label>
+              <label class="field wide">
+                <span>路径映射（每行一条，旧路径=新路径）</span>
+                <textarea id="import-map" rows="2" placeholder="C:\old\project=D:\new\project"></textarea>
+              </label>
+              <label class="field switch-field">
+                <span>仅预览</span>
+                <input type="checkbox" id="import-dry" checked />
+                <em>先看看会写哪些文件，不改动任何数据</em>
+              </label>
+            </div>
+            <div class="actions">
+              <button class="btn primary" id="btn-import">开始导入</button>
+              <span class="hint" id="import-hint"></span>
+            </div>
+          </div>
+
+          <div class="panel hidden" id="import-result"></div>
+        </section>
+
+        <section class="view hidden" id="view-archive">
+          <div class="panel">
+            <h2>自动备份</h2>
+            <p class="muted">每次写入目标 Agent 前，Ferry 都会先备份要改动的索引文件；导入出错可一键回滚。</p>
+            <div id="backup-list"></div>
+          </div>
+        </section>
+
+        <section class="view hidden" id="view-settings">
+          <div class="panel">
+            <h2>路径与目录</h2>
+            <div class="kv" id="settings-env"></div>
+          </div>
+          <div class="panel">
+            <h2>支持的 Agent</h2>
+            <div class="matrix" id="target-matrix"></div>
+            <p class="muted small">
+              「原生导入」表示 Ferry 直接写入该 Agent 的本地存储，重启应用即可在历史里看到并继续；
+              「交接包」适用于没有本地存储的云端产品，把 Markdown 粘进对话框即可接着聊。
+            </p>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div class="modal hidden" id="modal">
+      <div class="modal-card">
+        <div class="modal-head">
+          <h3 id="modal-title">预览</h3>
+          <button class="icon-btn" id="modal-close">✕</button>
+        </div>
+        <div class="modal-body markdown" id="modal-body"></div>
+      </div>
+    </div>
+
+    <div class="toasts" id="toasts"></div>
+
+    <script>
+      window.__FERRY_TOKEN__ = '__FERRY_BOOT_TOKEN__';
+    </script>
+    <script type="module" src="/assets/app.js"></script>
+  </body>
+</html>

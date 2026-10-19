@@ -1,0 +1,20 @@
+# 统一行尾：仓库内存 LF，检出不随平台漂移
+# 覆盖全局 core.autocrlf=true，避免 Windows 上产生纯行尾 diff
+* text=auto eol=lf
+
+# Windows 脚本必须 CRLF，否则 cmd.exe 解析异常
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# 二进制：不做任何转换与 diff
+*.ferrypack binary
+*.zip binary
+*.gz binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.ico binary
+*.sqlite binary
+*.vscdb binary
