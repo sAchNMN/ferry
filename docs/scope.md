@@ -1,6 +1,7 @@
 # 范围冻结：只做三个 Agent
 
-状态：**生效**。2026-10-19 首次确认收敛范围；同日 21:40 修订：Codex 解冻、ChatGPT 移出。
+状态：**生效**。2026-10-19 首次确认收敛范围；同日 21:40 修订：Codex 解冻、ChatGPT 移出；
+同日 22:10 修订：DeepSeek Harness 从只读来源升级为原生写回目标（v4 事件流 + workspace 索引）。
 本文件是范围的唯一权威来源。其他文档与本文件冲突时，以本文件为准。
 
 ---
@@ -13,7 +14,7 @@
 |---|---|---|
 | WorkBuddy（腾讯） | `src/adapters/workbuddy.js` | 原生写回目标 |
 | Codex（OpenAI） | `src/adapters/codex.js` | 原生写回目标 |
-| DeepSeek Harness | `src/adapters/deepseek-harness.js` | 只读来源 |
+| DeepSeek Harness | `src/adapters/deepseek-harness.js` + `deepseek-harness-write.js` | 原生写回目标（v4 事件流） |
 
 **ChatGPT 官方导出包移出范围**：它的会话在服务器上，本地没有可写的库，
 做它只能做"只读 + 交接包"，与"搬进去接着聊"不是同一件事。
@@ -36,15 +37,20 @@
 |---|---|---|---|---|
 | WorkBuddy | ✅ | ✅ `import: true` | ✅ `resume: true` | `workbuddy.js:60`，JSONL + `sessions` 表 |
 | Codex | ✅ | ✅ `import: true` | ✅ `resume: true` | `codex.js:27`，rollout JSONL + `session_index.jsonl` |
-| DeepSeek Harness | ✅ | ❌ `import: false` | ❌ | `deepseek-harness.js:37`，注释写明"原生回写格式尚未作为稳定契约" |
+| DeepSeek Harness | ✅ | ✅ `import: true` | ✅ `resume: true` | `deepseek-harness.js`，`session.v4.jsonl.zstd` + `workspace.json` |
 | ChatGPT | ✅（zip 导出包） | ❌ | ❌ | 会话在服务器上，本地无库可写 |
 
-**结论：本阶段有两个写回目标 —— WorkBuddy 和 Codex，它们之间可以双向。**
+**结论：本阶段有三个写回目标 —— WorkBuddy、Codex、DeepSeek Harness，代码上任意两端都能互搬。**
 
-所以产品故事是两条：
+但**能搬 ≠ 验通**。三条链路的验收进度必须分开看：
 
-> 1. 把 DeepSeek Harness 的历史，搬进 WorkBuddy 或 Codex；
-> 2. WorkBuddy 与 Codex 之间互相搬，搬过去能接着聊。
+| 链路 | 写回实现 | 应用内续聊 |
+|---|---|---|
+| WorkBuddy | ✅ | ✅ 2026-10-19 验通 |
+| Codex | ✅ 解析器接受，尚待人点开 | ⏳ |
+| DeepSeek Harness | ✅ Harness 自带 v4 校验器接受 | ⏳ |
+
+所以对外的说法是「三家都能当目标」，不是「三家互搬都验过了」。
 
 ChatGPT 那一路**物理上永远只能当来源**，且已移出范围。
 
@@ -55,22 +61,27 @@ ChatGPT 那一路**物理上永远只能当来源**，且已移出范围。
 | # | 链路 | 模式 | 状态 |
 |---|---|---|---|
 | L1 | WorkBuddy（A 机）→ WorkBuddy（B 机） | 原生续聊 | ✅ **2026-10-19 端到端验通**：真实会话导入后侧栏可见、点开内容完整、发消息拿到回复、应用继续往迁移文件里追加事件 |
-| L2 | DeepSeek Harness → WorkBuddy | 原生续聊（读只读源） | 读取侧 ✅ 2026-10-19 用本机 30 个真实会话验通（4,681 条消息，0 错误）；写入侧同 L1；整体在应用内点开待单独验 |
+| L2 | DeepSeek Harness → WorkBuddy | 原生续聊 | 读取侧 ✅ 2026-10-19 用本机 30 个真实会话验通（4,681 条消息，0 错误）；写入侧同 L1；整体在应用内点开待单独验 |
 | L3 | WorkBuddy ↔ Codex | 原生续聊（双向） | 写入侧结构用 112 个真实 rollout 逐字段对齐（`74ed140`）；**`codex` 自己能否读我们写的文件，未验** |
+| L4 | WorkBuddy / Codex → DeepSeek Harness | 原生续聊 | 写侧生成 v4 事件流并登记 `storages/workspace.json`；用安装包自带的 v4 解码器（`@deepseek-ai/dsh-session-format-v3-to-v4`）离线加载通过；**应用内点开未验**；导入前必须退出 Harness |
 
 关键风险不在写入侧，而在**读取侧的理解是否一致**：
 Codex 用自己的解析器读我们生成的 rollout，任何"我们写了、我们也能读"的验证都是循环论证。
 L3 的验收标准因此必须是：`codex resume` 的列表里能看见，点进去能继续发消息。
 
+DSH 的风险换成两处：Harness 用**安装包内的 v4 解码器**读日志（已离线验过），
+以及侧栏是否认 `workspace.json` 里新增的记账（结构已对齐，但没在运行中的应用里点开过）。
+另外，运行中的 Harness 会把 `workspace.json` 用自己的内存状态写回，所以导入前必须退出。
+
 ---
 
-## 4. 验收门槛（三条链路共用）
+## 4. 验收门槛（四条链路共用）
 
 一条链路算"迁移成功"，必须依次满足：
 
 1. 真实数据导出，0 错误，损失清单为空或已显式列出；
 2. `--dry-run` 零写盘，清单与真实写入一致；
-3. 导入后 WorkBuddy 侧栏历史里**能看见**；
+3. 导入后**目标应用的历史列表里能看见**（WorkBuddy / Codex / DSH 各自的历史列表）；
 4. 关闭应用重启，会话**仍然在**；
 5. 点开能发下一条消息并拿到回复；
 6. 二次导入幂等，不产生副本；
@@ -121,20 +132,43 @@ L3 的验收标准因此必须是：`codex resume` 的列表里能看见，点�
 
 ---
 
-## 6. 待定，需所有者决策
+## 6. 决策记录（原「待定，需所有者决策」）
 
-1. **DeepSeek Harness 要不要成为写回目标？**
-   Harness 的数据全在本地（`~/.dsh/sessions` + `storages/` + 用量文件），没有云端会话存储，
-   所以这不是"物理不可能"。难点是它是**事件溯源**结构：一个 518 条事件的真实会话里，
-   `step/start` 与 `step/end` 各 86 条、`tool/call` 与 `tool/result` 各 110 条严格配对，
-   还有 `surfaceOp` 历史改写、`request/header` 的模型配置、`turn` 边界。
-   写错一处，Harness 可能拒绝加载或渲染错乱。
+### 6.1 DeepSeek Harness 成为写回目标（已决）
 
-   要做的入口不是改代码，是**四次差分实验**（只读文件，不动 Harness）：
-   新建会话发一条 → 复制文件；再发一条 → 再复制；做一次工具调用 → 再复制；
-   触发一次历史压缩 → 再复制。四次 diff 就能反推出增量写入的格式契约。
-   拿到样本之后才谈 `import: true`。
+**决定（2026-10-19 22:10，所有者指示）：做。**
 
-2. **ChatGPT 相关（handoff 交接包、官方 zip 解析）**：已移出范围。
-   会话在服务器上，本地无库可写，只能当只读来源或交接包。
-   代码保留（`src/adapters/exports/chatgpt.js`），不做验收、不写进支持承诺。
+Harness 的数据全在本地（`~/.dsh/sessions` + `storages/`），没有云端会话存储，所以不是"物理不可能"。
+此前的顾虑是事件溯源结构难写：`turn` / `step` 边界、`tool/call` 与 `tool/result` 严格配对、
+`surfaceOp` 历史改写、`request/header` 模型配置。写错一处 Harness 会拒绝加载。
+
+**没有走四次差分实验，改成了两条更硬的证据来源**（只读，不动 Harness）：
+
+1. 安装包内自带完整的格式实现（`@deepseek-ai/dsh-session-format-v3-to-v4`、
+   `dsh-session-persistence-jsonl`、`dsh-session`），v4 的 header 字段、事件生命周期与
+   zstd 帧布局都有源码/文档可查，比 diff 反推更准；
+2. 本机真实会话作为样本逐类事件核对（含一条 474 条消息、251 次工具调用的长会话）。
+
+实现落在 `src/adapters/deepseek-harness-write.js`：
+
+- 事件流：`session/title` → 每个用户消息一个 `turn`，assistant 消息各自一个 `step`，
+  工具调用先由 assistant 的 `tool-call` 块"预告"，再 `tool/call`，最后 `tool/result`
+  （`sourceEventSeqs` 指回 call）；没有结果的调用整对跳过并写进 losses；
+- 物理格式：header 单独一帧、事件一帧，均带 zstd checksum；
+- 索引：Harness 的侧栏成员资格来自 `~/.dsh/storages/workspace.json` 的
+  `tables.workspaces[].sessionIds`，只写会话文件不会显示；导入会按 `cwd` 复用或新建
+  workspace 记录，并把会话 id 记到最前面；
+- 安全：`--dry-run` 零写盘；`workspace.json` 进备份范围；索引写失败会回滚刚写的会话文件；
+  索引结构无法识别时中止，不猜、不覆盖。
+
+**已验**：生成的日志用 Harness 自带的 v4 解码器（`sessionFormatCatalog.createRestore`）加载通过；
+会话文件可被本适配器重新扫描/读取；workspace 索引的复用、新建、回滚均有自动化用例。
+
+**未验**：重启 Harness 后在侧栏点开、发消息拿到回复。这是 L4 的最后一步，
+需要在真机上做一次（会改写真实 `~/.dsh`，导入前先退出 Harness）。
+
+### 6.2 ChatGPT 相关（已移出范围）
+
+**ChatGPT 相关（handoff 交接包、官方 zip 解析）**：已移出范围。
+会话在服务器上，本地无库可写，只能当只读来源或交接包。
+代码保留（`src/adapters/exports/chatgpt.js`），不做验收、不写进支持承诺。

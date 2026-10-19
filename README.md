@@ -59,12 +59,19 @@ Windows 也可以直接双击 `start.cmd`；macOS / Linux 用 `./start.sh`。
 
 当前承诺三个 Agent 的迁移：**WorkBuddy**、**Codex**、**DeepSeek Harness**。
 
-其中 **WorkBuddy 和 Codex 都能原生写回**，所以它们之间可以双向搬、搬过去接着聊。
-DeepSeek Harness 是只读来源。ChatGPT 已移出范围 —— 它的会话在服务器上，本地没有可写的库。
+三家都能导出，也都在代码上支持原生写回 —— 所以任意两端之间都能搬。
 
 ```
-DSH ──→ WorkBuddy ←──→ Codex
+WorkBuddy ←──→ Codex
+    ↕
+DeepSeek Harness
 ```
+
+**但「能搬」不等于「验过」**：目前只有 WorkBuddy 这一格在真实应用里点开续聊验通，
+Codex 与 DeepSeek Harness 的写回都还没在应用里点开过（见下面的验证状态表）。
+
+DeepSeek Harness 的写回走它的 v4 事件流（会话日志 + `workspace.json` 索引），
+是目前最新、也最需要真机验收的一条。ChatGPT 已移出范围 —— 它的会话在服务器上，本地没有可写的库。
 
 其余平台（Claude Code、Cursor、Copilot、Cline 系、Continue、Gemini CLI、Trae 等）
 代码保留但**已冻结**：只修 bug，不做续聊验收，不算支持承诺。详见 [docs/scope.md](docs/scope.md)。
@@ -91,12 +98,12 @@ Ferry 的每个平台支持按"证据等级"分三档，**不要按"代码里有
 | 平台 | 导出 | 导入 | 真实应用点开续聊 |
 |---|---|---|---|
 | **WorkBuddy**（腾讯） | ✅ 63 个真实会话 / 17k 条消息 | ✅ 写回字段与真实文件逐项对齐 | ✅ **2026-10-19 实测通过**：真实会话导入后侧栏可见、点开内容完整、发消息拿到回复，且应用继续往迁移文件里追加事件 |
-| **DeepSeek Harness** | ✅ 30 个真实会话 / 4,681 条消息，0 错误 | ❌ 不写回 | — |
+| **DeepSeek Harness** | ✅ 30 个真实会话 / 4,681 条消息，0 错误 | ✅ 生成 v4 事件流并登记 `workspace.json`；用 Harness 安装包自带的 v4 校验器（header / 每行准入 / 关系）离线全过 | ⏳ 待退出应用后重启点开 |
 | **Codex**（OpenAI） | ✅ 95 个活跃 rollout（含归档共 113 个） | ✅ 写回结构与真实 rollout 逐字段对齐 | ⏳ 待作者验证 |
 | **GitHub Copilot Chat** | ✅ 26 个真实会话 | 🧪 | ⏳ |
 | Claude Code / Cursor / Cline / Continue / Trae / Gemini CLI / Qwen / iFlow / OpenCode 等 | 🧪 | 🧪 | ⏳ |
 
-一句话：**WorkBuddy 这一路已经端到端验通，可以真用；Codex 结构对齐但没人点开过；其余平台请自己先在一个不重要的会话上试。**
+一句话：**WorkBuddy 这一路已经端到端验通，可以真用；Codex 结构对齐但没人点开过；DeepSeek Harness 的写回已被官方解码器接受，但还没在应用里点开过。其余平台请自己先在一个不重要的会话上试。**
 
 ### 实现清单（下面这些是"代码支持"，不等于"验证过"）
 
@@ -117,12 +124,12 @@ Ferry 的每个平台支持按"证据等级"分三档，**不要按"代码里有
 | Trae / Trae CN | 字节跳动 | `<User>/workspaceStorage/*/chatSessions/*.jsonl` | 聊天历史（实验性） |
 | Windsurf / Kiro / VSCodium | 多家 | 同上（VS Code 系格式） | 聊天历史（实验性） |
 | WorkBuddy | 腾讯 | `~/.workbuddy/projects/<slug>/<sessionId>.jsonl` + `workbuddy.db` 的 `sessions` 表 | 重启应用，侧栏历史列表 |
+| DeepSeek Harness | DeepSeek | `~/.dsh/sessions/<project>/<sessionId>/session.v4.jsonl.zstd` + `~/.dsh/storages/workspace.json` | 先退出再重启应用，左侧历史列表 |
 
 ### 只能导出（只读解析）
 
 | Agent | 说明 |
 |---|---|
-| DeepSeek Harness | `~/.dsh/sessions/<slug>/<sessionId>/session.v4.jsonl.zstd`（带版本号，未压缩的 `session*.jsonl` 也认），读取后可转交接包或迁移到其它本地 Agent |
 | Goose（Block） | 会话为 JSONL，可导出、可转交接包 |
 | Aider | `.aider.chat.history.md`，可导出、可转交接包 |
 
@@ -236,6 +243,8 @@ ferry import recent.ferrypack --to claude-code --workspace D:\work\proj
 - 分支对话只保留当前主分支（ChatGPT 导出里的 `current_node` 路径）。
 - 工具调用的结果长度取决于源数据，被源端截断的内容无法补全。
 - Cursor 的导入是**实验性**的：不同版本 schema 会变，导入前请退出 Cursor，失败可用备份回滚。
+- DeepSeek Harness 的写回会丢两样东西：系统提示词（目标端应该用自己的）与思考过程（重放需要原始推理签名，伪造比丢掉更危险）。图片降级为文字占位。
+- DeepSeek Harness 的侧栏成员资格记在 `~/.dsh/storages/workspace.json` 里，**导入前必须先退出 Harness**；否则运行中的应用会用内存状态覆盖这次索引更新。导入失败可用 `ferry rollback` 还原。
 - 云端产品无法写入账号，只能交接包或登录同账号。
 - 导入不会修改消息正文中的历史路径（避免内容失真），只改会话的工作区元数据。
 
@@ -244,7 +253,7 @@ ferry import recent.ferrypack --to claude-code --workspace D:\work\proj
 ## 开发
 
 ```bash
-npm test          # 124 个测试：tar/zip/crypto/归档/脱敏/路径映射/幂等/适配器往返
+npm test          # 160 个测试：tar/zip/crypto/归档/脱敏/路径映射/幂等/适配器往返
 node bin/ferry.js doctor
 npm run package   # 生成 dist/ferry-<version>.tar.gz（可直接拷到别的机器）
 ```

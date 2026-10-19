@@ -2,10 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import { zstdCompressSync } from 'node:zlib';
+import { zstdCompressSync, zstdDecompressSync } from 'node:zlib';
 
+import { rollback } from '../../src/core/backup.js';
 import { collectForExport, importConversations } from '../../src/core/migrate.js';
 import { getStore, scanStores } from '../../src/core/registry.js';
+import { block, createConversation } from '../../src/core/ucm.js';
 import { freshDir, makeEnv, seedDeepSeekHarness } from '../helpers.js';
 
 test('DeepSeek Harness：扫描并读取事件日志', async () => {
@@ -219,4 +221,280 @@ test('DeepSeek Harness：JSONL 坏行显式报错，不静默跳过', async () =
       return true;
     },
   );
+});
+
+/* ------------------------------------------------------------------ */
+/* 写回：v4 事件流 + workspace 索引                                    */
+/* ------------------------------------------------------------------ */
+
+const WORKSPACE_ID = '11111111-1111-4111-8111-111111111111';
+
+/** 伪造 Harness 已初始化的 workspace 索引（侧栏成员资格的唯一来源）。 */
+async function seedWorkspaceIndex(home, workspacePath, sessionIds = []) {
+  const file = path.join(home, '.dsh', 'storages', 'workspace.json');
+  const index = {
+    unit: { name: 'workspace', version: 2 },
+    global: {
+      initialized: true,
+      workspaceIds: [WORKSPACE_ID],
+      archivedSessionIds: [],
+      pinnedSessionIds: [],
+    },
+    tables: {
+      workspaces: {
+        [WORKSPACE_ID]: {
+          path: workspacePath,
+          title: path.basename(workspacePath),
+          sessionIds,
+          createdAt: '2026-10-01T00:00:00.000Z',
+          updatedAt: '2026-10-01T00:00:00.000Z',
+        },
+      },
+    },
+  };
+  await fsp.mkdir(path.dirname(file), { recursive: true });
+  await fsp.writeFile(file, JSON.stringify(index, null, 2));
+  return { file, index, id: WORKSPACE_ID };
+}
+
+async function importInto(targetHome, sourceHome, opts = {}) {
+  const collected = await collectForExport(makeEnv(sourceHome), {
+    agents: ['deepseek-harness'],
+    redact: false,
+  });
+  return importConversations(makeEnv(targetHome), collected.conversations, {
+    target: 'deepseek-harness',
+    workspace: 'C:\\work\\deepseek',
+    backup: false,
+    ...opts,
+  });
+}
+
+/** 逐帧解压 Harness 的 zstd 容器（header 一帧、事件一帧）。 */
+function decompressSession(buffer) {
+  const chunks = [];
+  let offset = 0;
+  while (offset < buffer.length) {
+    const end = zstdFrameEnd(buffer, offset);
+    chunks.push(zstdDecompressSync(buffer.subarray(offset, end)));
+    offset = end;
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+function zstdFrameEnd(raw, start) {
+  let cursor = start + 4;
+  const descriptor = raw[cursor++];
+  const singleSegment = Boolean(descriptor & 0x20);
+  const fcsFlag = descriptor >>> 6;
+  const dictionaryBytes = [0, 1, 2, 4][descriptor & 0x03];
+  if (!singleSegment) cursor += 1;
+  cursor += dictionaryBytes;
+  cursor += fcsFlag === 0 ? (singleSegment ? 1 : 0) : fcsFlag === 1 ? 2 : fcsFlag === 2 ? 4 : 8;
+  let last = false;
+  while (!last) {
+    const header = raw[cursor] | (raw[cursor + 1] << 8) | (raw[cursor + 2] << 16);
+    cursor += 3;
+    last = Boolean(header & 1);
+    const blockType = (header >>> 1) & 0x03;
+    const storedSize = blockType === 1 ? 1 : header >>> 3;
+    cursor += storedSize;
+  }
+  if (descriptor & 0x04) cursor += 4;
+  return cursor;
+}
+
+test('DeepSeek Harness：能力声明为可原生写回', () => {
+  const store = getStore('deepseek-harness');
+  assert.equal(store.capabilities.import, true);
+  assert.equal(store.capabilities.resume, true);
+});
+
+test('DeepSeek Harness：写回 v4 会话并登记到 workspace 索引', async () => {
+  const srcHome = await freshDir('dsh-write-src');
+  const dstHome = await freshDir('dsh-write-dst');
+  await seedDeepSeekHarness(srcHome);
+  const seeded = await seedWorkspaceIndex(dstHome, 'C:\\work\\deepseek');
+
+  const result = await importInto(dstHome, srcHome);
+  const entry = result.results[0];
+  assert.equal(entry.error, null);
+
+  const sessionWrite = entry.writes.find((w) => w.kind === 'deepseek-harness-session');
+  const indexWrite = entry.writes.find((w) => w.kind === 'deepseek-harness-workspace-index');
+  assert.ok(sessionWrite, '必须写入会话文件');
+  assert.ok(indexWrite, '必须登记 workspace 索引');
+  assert.match(
+    sessionWrite.path,
+    /--C-work-deepseek--[\\/]session-[0-9a-f-]{36}[\\/]session\.v4\.jsonl\.zstd$/,
+  );
+
+  const index = JSON.parse(await fsp.readFile(seeded.file, 'utf8'));
+  assert.deepEqual(index.tables.workspaces[seeded.id].sessionIds, [entry.resume.sessionId]);
+  assert.equal(index.tables.workspaces[seeded.id].path, 'C:\\work\\deepseek');
+
+  const refs = await getStore('deepseek-harness').scan(makeEnv(dstHome));
+  assert.equal(refs.length, 1);
+  assert.equal(refs[0].id, entry.resume.sessionId);
+  assert.equal(refs[0].title, '修复 DeepSeek 迁移');
+  assert.equal(refs[0].workspace, 'C:\\work\\deepseek');
+
+  const conv = await getStore('deepseek-harness').read(makeEnv(dstHome), refs[0], { blobs: new Map() });
+  assert.deepEqual(conv.messages.map((m) => m.role), ['user', 'assistant', 'tool', 'assistant']);
+  assert.equal(conv.messages[0].blocks[0].text, '请检查迁移脚本。');
+  assert.ok(conv.messages[1].blocks.some((b) => b.type === 'tool_call' && b.name === 'shell'));
+  assert.ok(conv.messages[2].blocks.some((b) => b.type === 'tool_result' && b.output.includes('FAIL')));
+});
+
+test('DeepSeek Harness：写出的日志是闭合的 v4 事件流', async () => {
+  const srcHome = await freshDir('dsh-write-format-src');
+  const dstHome = await freshDir('dsh-write-format-dst');
+  await seedDeepSeekHarness(srcHome);
+  await seedWorkspaceIndex(dstHome, 'C:\\work\\deepseek');
+
+  const result = await importInto(dstHome, srcHome);
+  const sessionWrite = result.results[0].writes.find((w) => w.kind === 'deepseek-harness-session');
+  const lines = decompressSession(await fsp.readFile(sessionWrite.path)).split(/\r?\n/).filter(Boolean);
+
+  const header = JSON.parse(lines[0]);
+  assert.equal(header.type, 'session');
+  assert.equal(header.version, 4);
+  assert.equal(header.isSeeded, false);
+  assert.equal(header.cwd, 'C:\\work\\deepseek');
+
+  const events = lines.slice(1).map((line) => JSON.parse(line));
+  events.forEach((event, index) => assert.equal(event.seq, index, 'seq 必须从 0 开始且稠密'));
+  assert.equal(events[0].type, 'session/title');
+
+  const surfaceTypes = new Set(['system/message', 'user/message', 'developer/message', 'assistant/message', 'tool/result']);
+  for (const event of events.filter((e) => surfaceTypes.has(e.type))) {
+    assert.equal(event.surfaceOp, 'append', `${event.type} 必须声明 append`);
+  }
+
+  const assistant = events.find((e) => e.type === 'assistant/message');
+  assert.ok(Array.isArray(assistant.data.stream), 'assistant/message 必须带 stream 数组');
+  const call = events.find((e) => e.type === 'tool/call');
+  const toolResult = events.find((e) => e.type === 'tool/result');
+  assert.equal(call.data.callId, toolResult.data.message.toolCallId);
+  assert.deepEqual(toolResult.sourceEventSeqs, [call.seq]);
+
+  let turn = 0;
+  let step = 0;
+  let openStep = false;
+  for (const event of events) {
+    if (event.type === 'turn/start') {
+      turn += 1;
+      assert.equal(event.data.turn, turn);
+      openStep = false;
+    } else if (event.type === 'step/start') {
+      step += 1;
+      assert.equal(event.data.turn, turn);
+      assert.equal(event.data.step, step);
+      openStep = true;
+    } else if (event.type === 'step/end') {
+      assert.equal(openStep, true);
+      openStep = false;
+    } else if (event.type === 'turn/end') {
+      assert.equal(openStep, false, 'turn 结束时不能还有打开的 step');
+      assert.equal(event.data.turn, turn);
+    }
+  }
+});
+
+test('DeepSeek Harness：预演零写盘，且清单与真实写入一致', async () => {
+  const srcHome = await freshDir('dsh-dry-src');
+  const dstHome = await freshDir('dsh-dry-dst');
+  await seedDeepSeekHarness(srcHome);
+  await seedWorkspaceIndex(dstHome, 'C:\\work\\deepseek');
+
+  const planned = await importInto(dstHome, srcHome, { dryRun: true });
+  const plannedWrites = planned.results[0].writes;
+  assert.equal(plannedWrites.length, 2);
+  await assert.rejects(() => fsp.stat(path.join(dstHome, '.dsh', 'sessions')), /ENOENT/);
+
+  const real = await importInto(dstHome, srcHome);
+  const realWrites = real.results[0].writes;
+  assert.deepEqual(realWrites.map((w) => w.kind), plannedWrites.map((w) => w.kind));
+  for (const write of [...plannedWrites, ...realWrites]) assert.ok(write.bytes > 0);
+  assert.match(realWrites[0].path, /session-[0-9a-f-]{36}[\\/]session\.v4\.jsonl\.zstd$/);
+});
+
+test('DeepSeek Harness：目标目录没有项目时新建 workspace 并排在最前', async () => {
+  const srcHome = await freshDir('dsh-new-ws-src');
+  const dstHome = await freshDir('dsh-new-ws-dst');
+  await seedDeepSeekHarness(srcHome);
+  const seeded = await seedWorkspaceIndex(dstHome, 'C:\\work\\other');
+
+  const result = await importInto(dstHome, srcHome, { workspace: 'C:\\work\\newproj' });
+  assert.equal(result.results[0].error, null);
+
+  const index = JSON.parse(await fsp.readFile(seeded.file, 'utf8'));
+  assert.equal(index.global.workspaceIds.length, 2);
+  const newId = index.global.workspaceIds[0];
+  assert.notEqual(newId, seeded.id);
+  assert.equal(index.tables.workspaces[newId].path, 'C:\\work\\newproj');
+  assert.equal(index.tables.workspaces[newId].title, 'newproj');
+  assert.deepEqual(index.tables.workspaces[newId].sessionIds, [result.results[0].resume.sessionId]);
+});
+
+test('DeepSeek Harness：索引尚未初始化时只写会话，交给首启 bootstrap 归组', async () => {
+  const srcHome = await freshDir('dsh-no-index-src');
+  const dstHome = await freshDir('dsh-no-index-dst');
+  await seedDeepSeekHarness(srcHome);
+
+  const result = await importInto(dstHome, srcHome);
+  const entry = result.results[0];
+  assert.equal(entry.error, null);
+  assert.equal(entry.writes.length, 1);
+  assert.ok(entry.notes.some((note) => note.includes('自动归组')));
+  assert.equal((await getStore('deepseek-harness').scan(makeEnv(dstHome))).length, 1);
+});
+
+test('DeepSeek Harness：workspace 索引损坏时中止导入，不留下半条会话', async () => {
+  const srcHome = await freshDir('dsh-bad-index-src');
+  const dstHome = await freshDir('dsh-bad-index-dst');
+  await seedDeepSeekHarness(srcHome);
+  const file = path.join(dstHome, '.dsh', 'storages', 'workspace.json');
+  await fsp.mkdir(path.dirname(file), { recursive: true });
+  await fsp.writeFile(file, JSON.stringify({ unit: { name: 'workspace', version: 2 }, global: { initialized: true }, tables: {} }));
+
+  const result = await importInto(dstHome, srcHome);
+  const entry = result.results[0];
+  assert.match(entry.error, /workspace 索引/);
+  await assert.rejects(() => fsp.stat(path.join(dstHome, '.dsh', 'sessions')), /ENOENT/);
+});
+
+test('DeepSeek Harness：rollback 还原 workspace 索引并删掉新建会话', async () => {
+  const srcHome = await freshDir('dsh-rollback-src');
+  const dstHome = await freshDir('dsh-rollback-dst');
+  await seedDeepSeekHarness(srcHome);
+  const seeded = await seedWorkspaceIndex(dstHome, 'C:\\work\\deepseek');
+  const before = await fsp.readFile(seeded.file, 'utf8');
+
+  const result = await importInto(dstHome, srcHome, { backup: true });
+  assert.equal(result.results[0].error, null);
+  assert.ok(result.backup);
+  assert.notEqual(await fsp.readFile(seeded.file, 'utf8'), before);
+  assert.equal((await getStore('deepseek-harness').scan(makeEnv(dstHome))).length, 1);
+
+  await rollback(makeEnv(dstHome), result.backup.id);
+  assert.equal(await fsp.readFile(seeded.file, 'utf8'), before);
+  assert.equal((await getStore('deepseek-harness').scan(makeEnv(dstHome))).length, 0);
+});
+
+test('DeepSeek Harness：没有结果的工具调用整对跳过并记入 losses', async () => {
+  const home = await freshDir('dsh-unpaired');
+  const conv = createConversation({
+    title: '没有结果的调用',
+    messages: [
+      { role: 'user', blocks: [block.text('跑一下')] },
+      { role: 'assistant', blocks: [block.toolCall('pwsh', { command: 'x' }, 'call-x')] },
+    ],
+  });
+
+  const result = await getStore('deepseek-harness').import(makeEnv(home), conv, {
+    workspace: 'C:\\work\\unpaired',
+    dryRun: true,
+  });
+  assert.ok(result.losses.some((loss) => loss.kind === 'tools'));
 });

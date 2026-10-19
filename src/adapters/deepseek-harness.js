@@ -1,9 +1,12 @@
 /**
  * DeepSeek Harness 本地会话适配器。
  *
- * Harness 的会话是项目目录下的 JSONL（默认也可能是 zstd 压缩的 JSONL）。
- * 这里做只读迁移：读取事件日志为 UCM，再由核心转交给其它本地 Agent。
- * DeepSeek Harness 的原生回写格式尚未作为 Ferry 的稳定契约，因此不写回。
+ * 读：Harness 的会话是项目目录下的事件日志（当前是 `session.v4.jsonl.zstd`，
+ * 早期版本是未压缩的 `session*.jsonl`）。事件溯源结构先归一化成 UCM，再交给核心。
+ *
+ * 写：v4 的格式契约（header、turn/step 生命周期、工具调用的预告/结算配对、
+ * zstd 帧布局）在 `deepseek-harness-write.js` 里实现；生成的事件流可以再被本适配器
+ * 读回，也用 Harness 自己的 v4 解码器离线校验过。系统提示词与思考过程不迁移。
  */
 import fsp from 'node:fs/promises';
 import path from 'node:path';
@@ -11,8 +14,15 @@ import * as zlib from 'node:zlib';
 
 import { defineStore } from '../core/adapter.js';
 import { block, createConversation, deriveTitle } from '../core/ucm.js';
-import { exists, FerryError, isoFrom, uid } from '../core/util.js';
+import { exists, existsSync, FerryError, isoFrom, uid } from '../core/util.js';
 import { readHead } from './_shared.js';
+import {
+  attachSessionToWorkspace,
+  buildSessionLog,
+  encodeSessionFile,
+  serializeWorkspaceIndex,
+  sessionLogPath,
+} from './deepseek-harness-write.js';
 
 /**
  * 会话文件名。实测（2026-10-19 本机）是 `session.v4.jsonl.zstd`，
@@ -34,8 +44,8 @@ export default defineStore({
   capabilities: {
     scan: true,
     export: true,
-    import: false,
-    resume: false,
+    import: true,
+    resume: true,
     attachments: false,
     tools: true,
   },
@@ -82,7 +92,194 @@ export default defineStore({
       });
     }
   },
+
+  /** 写入一条 v4 会话；`opts.dryRun` 时只计算路径与字节数，零写盘。 */
+  async import(env, conv, opts = {}) {
+    return writeConversation(env, conv, opts);
+  },
+
+  /** 与 import 共用同一份计划逻辑，契约要求预演与实际写入完全一致。 */
+  async planImport(env, conv, opts = {}) {
+    return writeConversation(env, conv, { ...opts, dryRun: true });
+  },
+
+  /**
+   * 导入会改写 `storages/workspace.json`（侧栏的 workspace 记账）。
+   * 文件不存在时返回空数组，避免回滚去删一个这次根本没改的文件。
+   */
+  backupScope(env) {
+    const file = workspaceIndexPath(env);
+    return existsSync(file) ? [file] : [];
+  },
+
+  resumeHint() {
+    return RESUME_HINT;
+  },
 });
+
+const RESUME_HINT =
+  '先退出 DeepSeek Harness，再重新打开：会在左侧历史列表里看到该会话，点开即可继续发消息。（正在运行的应用不会自动发现磁盘上的新会话。）';
+
+/**
+ * 选择导入后的项目目录：显式 --workspace 优先，其次源会话工作区，最后当前目录。
+ * Harness 的 header.cwd 必须是绝对路径，否则它自己的 header 校验会拒收。
+ */
+function importCwd(env, conv, opts) {
+  for (const candidate of [opts.workspace, conv?.workspace?.cwd, env.cwd]) {
+    if (typeof candidate === 'string' && candidate && path.isAbsolute(candidate)) return candidate;
+  }
+  return path.resolve(env.cwd || '.');
+}
+
+/** Harness 的会话根目录（写回固定用当前版本的 ~/.dsh，不猜历史目录）。 */
+function sessionRoot(env) {
+  return path.join(dshHome(env), 'sessions');
+}
+
+function dshHome(env) {
+  return env.dshHome || path.join(env.home, '.dsh');
+}
+
+function workspaceIndexPath(env) {
+  return path.join(dshHome(env), 'storages', 'workspace.json');
+}
+
+/** Harness 用 fs.realpath 作为 workspace 路径的唯一规范；目录不存在时退回归一化路径。 */
+async function canonicalPath(value) {
+  try {
+    return await fsp.realpath(value);
+  } catch {
+    return path.resolve(value);
+  }
+}
+
+async function writeConversation(env, conv, opts = {}) {
+  const requested = importCwd(env, conv, opts);
+  const canonical = await canonicalPath(requested);
+  const sessionId = uid('session-');
+  const indexFile = workspaceIndexPath(env);
+
+  let index = null;
+  try {
+    index = JSON.parse(await fsp.readFile(indexFile, 'utf8'));
+  } catch {
+    index = null;
+  }
+
+  let attached = null;
+  if (index) {
+    try {
+      attached = attachSessionToWorkspace(index, {
+        sessionId,
+        cwd: canonical,
+        createdAt: conv.createdAt,
+        platform: env.platform,
+      });
+    } catch (cause) {
+      throw new FerryError('DeepSeek Harness 的 workspace 索引无法识别，已中止导入以免破坏它', {
+        code: 'EIMPORT',
+        hint: `${cause.message}；请先退出 Harness，备份或删除 ${indexFile} 后重试`,
+        cause,
+      });
+    }
+  }
+
+  const cwd = attached?.workspacePath || canonical;
+  const session = buildSessionLog(conv, { cwd, sessionId, createdAt: conv.createdAt });
+  const isConversation = session.events.some((event) => event.type === 'user/message' || event.type === 'assistant/message');
+  if (!isConversation) {
+    throw new FerryError('这条会话没有可写入的对话内容', {
+      code: 'EIMPORT',
+      hint: '只有系统消息、空消息或无法配对的工具调用；换一条会话再试',
+    });
+  }
+
+  let buffer;
+  try {
+    buffer = encodeSessionFile(session);
+  } catch (cause) {
+    throw new FerryError('无法生成 DeepSeek Harness 会话文件', {
+      code: 'EWRITE',
+      hint: cause.message,
+      cause,
+    });
+  }
+
+  const root = sessionRoot(env);
+  const file = sessionLogPath(root, cwd, session.sessionId);
+  const writes = [{ path: file, kind: 'deepseek-harness-session', bytes: buffer.length }];
+  const indexBytes = attached ? Buffer.from(serializeWorkspaceIndex(attached.index), 'utf8') : null;
+  if (indexBytes) writes.push({ path: indexFile, kind: 'deepseek-harness-workspace-index', bytes: indexBytes.length });
+
+  const notes = [];
+  if (!index) {
+    notes.push('没有找到 workspace 索引：Harness 首次启动时会按会话目录自动归组');
+  } else if (!attached) {
+    notes.push(
+      index.global?.initialized === true
+        ? '会话已经登记在 workspace 索引里，无需重复写入'
+        : 'workspace 索引尚未初始化：Harness 首次启动时会按会话目录自动归组',
+    );
+  } else if (attached.created) {
+    notes.push(`已在 workspace 索引里新建项目「${path.basename(attached.workspacePath)}」`);
+  } else {
+    notes.push('已把会话登记到现有项目的 workspace 索引');
+  }
+  notes.push('导入前请退出 Harness；运行中的应用会用自己的内存状态覆盖 workspace 索引');
+  for (const loss of session.losses) notes.push(loss.detail);
+  if (!existsSync(cwd)) {
+    notes.push(`目标目录在本机不存在：${cwd}；Harness 会过滤掉这个会话，先创建目录再重启`);
+  }
+
+  if (!opts.dryRun) {
+    await fsp.mkdir(path.dirname(file), { recursive: true });
+    try {
+      await fsp.writeFile(file, buffer, { flag: 'wx' });
+    } catch (cause) {
+      throw new FerryError(`写入 DeepSeek Harness 会话失败：${file}`, {
+        code: 'EWRITE',
+        hint: cause.code === 'EEXIST' ? '同名会话已经存在；换一个会话或先删除旧文件' : cause.message,
+        cause,
+      });
+    }
+
+    if (indexBytes) {
+      try {
+        await writeFileAtomic(indexFile, indexBytes);
+      } catch (cause) {
+        await fsp.rm(file, { force: true }).catch(() => {});
+        throw new FerryError(`更新 DeepSeek Harness workspace 索引失败：${indexFile}`, {
+          code: 'EWRITE',
+          hint: `${cause.message}；请先退出 Harness 再重试（会话文件已回滚）`,
+          cause,
+        });
+      }
+    }
+  } else {
+    notes.push('预演：只计算会话文件与 workspace 索引的写入清单，不创建目录、不写文件');
+  }
+
+  return {
+    writes,
+    sessionId: session.sessionId,
+    losses: session.losses,
+    notes,
+    resume: { sessionId: session.sessionId, cwd },
+  };
+}
+
+/** 先写临时文件再改名，避免 Harness 读到写了一半的 workspace.json。 */
+async function writeFileAtomic(file, buffer) {
+  const tmp = `${file}.ferry-${process.pid}-${Date.now()}.tmp`;
+  await fsp.mkdir(path.dirname(file), { recursive: true });
+  await fsp.writeFile(tmp, buffer);
+  try {
+    await fsp.rename(tmp, file);
+  } catch (cause) {
+    await fsp.rm(tmp, { force: true }).catch(() => {});
+    throw cause;
+  }
+}
 
 async function readConversation(ref) {
   const records = parseRecords(await readLog(ref.path));

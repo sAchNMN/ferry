@@ -7,7 +7,7 @@ Ferry 的适配器分两类：
 
 每个适配器都是纯 ESM 模块，只依赖 `src/core`，不引入第三方包。
 
-> **范围冻结（2026-10-19）**：本项目当前只维护 **WorkBuddy / DeepSeek Harness / ChatGPT** 三个适配器。
+> **范围冻结（2026-10-19）**：本项目当前只维护 **WorkBuddy / Codex / DeepSeek Harness** 三个适配器。
 > 本指南作为协议说明仍然有效，但**暂停接受新的平台适配器**；其余适配器进入冻结态，只修 bug。
 > 见 [scope.md](scope.md)。
 
@@ -119,8 +119,25 @@ export default defineImporter({
 | OpenCode | `~/.local/share/opencode/storage/{session,message,part}/…` | 三级 JSON |
 | Aider | `~/.aider.chat.history.md` | `####` 用户 / `#` 助手 |
 | WorkBuddy | `~/.workbuddy/projects/<slug>/<sessionId>.jsonl` | 行事件（`session-meta` / `message` / `reasoning` / `function_call`(`_result`) / `ai-title`）；索引 `workbuddy.db` 的 `sessions` 表；图片在 `blobs/<前两位>/<sha256>.<ext>` |
+| DeepSeek Harness | `~/.dsh/sessions/--<project>--/<sessionId>/session.v4.jsonl.zstd` | 事件溯源 JSONL（header 单独一帧 + 批次帧，zstd 带 checksum）；`turn`/`step`/`tool` 严格配对；侧栏成员资格在 `~/.dsh/storages/workspace.json` 的 `workspaces[].sessionIds` |
 
 版本会变。适配器应当"嗅探 + 容错"，而不是假设字段永远存在。
+
+### DeepSeek Harness 写回的四个硬约束
+
+1. **物理帧**：第一帧只能有一行 header（`type:"session"`、`version:4`、`id`、`createdAt`、`isSeeded`、`delegationDepth`、`cwd`），
+   之后每帧是一批 JSONL；frame 带 checksum。事件 `seq` 必须从 0 开始稠密递增。
+2. **turn / step 生命周期**：`turn/start` → `step/start` → 消息 → `step/end` → `turn/end`；
+   step 编号在每个 turn 内从 1 递增，`turn/end` 时不能还有打开的 step。
+3. **工具配对**：`assistant/message` 的 content 里先有 `tool-call` 块，才能写 `tool/call`；
+   `tool/result` 的 `message.toolCallId` 必须匹配，且 `sourceEventSeqs` 指回 call 的 seq。
+   没有结果的调用不能留到 `step/end`，整对跳过并写进 `losses`。
+4. **侧栏索引**：只写 `session.v4.jsonl.zstd` 不会出现在历史列表；必须把 sessionId 记进
+   `~/.dsh/storages/workspace.json` 对应 `cwd` 的 `workspaces[].sessionIds`。
+   这是会被 Harness 进程覆写的文件，**导入前先退出 Harness**；它必须进 `backupScope`。
+
+参考实现：`src/adapters/deepseek-harness-write.js`；用 `--dry-run` 对比写入清单，
+用 `ferry rollback` 验证索引能还原。
 
 ## 4. 测试
 
@@ -149,11 +166,5 @@ node --test --test-isolation=none test/core.test.js test/adapters.test.js
 
 ## 5. 注册
 
-编辑 `src/adapters/index.js`：
-
-```js
-import myAgent from './my-agent.js';
-export const stores = [/* … */, myAgent];
-```
-
-能力矩阵、CLI、Web UI 会自动出现，不需要改别的地方。
+**不需要改 `src/adapters/index.js`**。新增 `src/adapters/<name>.js` 后会被自动发现；
+`_` 前缀的文件、任意层级的 `index.js` 不参与发现（见 [contract/adapter-interface.md](contract/adapter-interface.md)）。
