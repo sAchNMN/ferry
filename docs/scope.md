@@ -1,57 +1,66 @@
 # 范围冻结：只做三个 Agent
 
-状态：**生效**。2026-10-19 由项目所有者确认收敛范围。
+状态：**生效**。2026-10-19 首次确认收敛范围；同日 21:40 修订：Codex 解冻、ChatGPT 移出。
 本文件是范围的唯一权威来源。其他文档与本文件冲突时，以本文件为准。
 
 ---
 
 ## 1. 决定
 
-当前阶段**只做三个 Agent 的迁移**：
+当前阶段做**三个 Agent 的迁移**：
 
 | Agent | 适配器文件 | 角色 |
 |---|---|---|
-| WorkBuddy（腾讯） | `src/adapters/workbuddy.js` | 唯一的原生写回目标 |
+| WorkBuddy（腾讯） | `src/adapters/workbuddy.js` | 原生写回目标 |
+| Codex（OpenAI） | `src/adapters/codex.js` | 原生写回目标 |
 | DeepSeek Harness | `src/adapters/deepseek-harness.js` | 只读来源 |
-| ChatGPT（官方导出包） | `src/adapters/exports/chatgpt.js` | 只读来源 |
 
-其余全部适配器代码**保留但不投入**：只修 bug，不加功能，不做续聊验收，不写进支持承诺。
+**ChatGPT 官方导出包移出范围**：它的会话在服务器上，本地没有可写的库，
+做它只能做"只读 + 交接包"，与"搬进去接着聊"不是同一件事。
+适配器代码保留，不再投入。
+
+其余平台适配器一律**保留但不投入**：只修 bug，不加功能，不做续聊验收，不写进支持承诺。
 见第 5 节的冻结清单。
+
+> **变更记录 2026-10-19 21:40：Codex 解冻。**
+> 理由：它是本机会话最多的 Agent（95 个活跃 rollout，比 WorkBuddy 的 56 个还多），
+> 且 `import: true` 的写回实现早已完成、结构用 112 个真实文件逐字段对齐过（提交 `74ed140`），
+> 唯一缺的是"导入后在应用里点开"这一次验收。此前按"只验证自己实际在用的 Agent"的原则把它冻掉，
+> 但 Codex 恰恰是用得最多的那个 —— 冻掉它等于把唯一能与 WorkBuddy 双向的落点关掉。
 
 ---
 
-## 2. 代码事实：三个不是对等的
-
-这不是排期问题，是能力问题。当前代码里的 `capabilities`：
+## 2. 代码事实：三家不是对等的
 
 | Agent | 导出 | 原生写回 | 导入后续聊 | 依据 |
 |---|---|---|---|---|
-| WorkBuddy | ✅ | ✅ `import: true` | ✅ `resume: true` | `workbuddy.js:59`，JSONL + `sessions` 表 |
-| DeepSeek Harness | ✅ | ❌ `import: false` | ❌ | `deepseek-harness.js:26`，注释写明"原生回写格式尚未作为稳定契约" |
+| WorkBuddy | ✅ | ✅ `import: true` | ✅ `resume: true` | `workbuddy.js:60`，JSONL + `sessions` 表 |
+| Codex | ✅ | ✅ `import: true` | ✅ `resume: true` | `codex.js:27`，rollout JSONL + `session_index.jsonl` |
+| DeepSeek Harness | ✅ | ❌ `import: false` | ❌ | `deepseek-harness.js:37`，注释写明"原生回写格式尚未作为稳定契约" |
 | ChatGPT | ✅（zip 导出包） | ❌ | ❌ | 会话在服务器上，本地无库可写 |
 
-**结论：本阶段只有一个写回目标，就是 WorkBuddy。**
+**结论：本阶段有两个写回目标 —— WorkBuddy 和 Codex，它们之间可以双向。**
 
-所以产品故事不是"三个平台互迁"，而是：
+所以产品故事是两条：
 
-> 把 DeepSeek Harness 和 ChatGPT 的历史，搬进 WorkBuddy。
+> 1. 把 DeepSeek Harness 的历史，搬进 WorkBuddy 或 Codex；
+> 2. WorkBuddy 与 Codex 之间互相搬，搬过去能接着聊。
 
-三向互迁需要先给 DeepSeek Harness 定写回格式，且 ChatGPT 那一路**物理上永远做不到**——只能当来源或交接包。
+ChatGPT 那一路**物理上永远只能当来源**，且已移出范围。
 
 ---
 
-## 3. 在范围内的三条链路
-
-统一目标写法：`--to workbuddy`。
+## 3. 在范围内的链路
 
 | # | 链路 | 模式 | 状态 |
 |---|---|---|---|
 | L1 | WorkBuddy（A 机）→ WorkBuddy（B 机） | 原生续聊 | ✅ **2026-10-19 端到端验通**：真实会话导入后侧栏可见、点开内容完整、发消息拿到回复、应用继续往迁移文件里追加事件 |
-| L2 | DeepSeek Harness → WorkBuddy | 原生续聊（读只读源） | 读取侧 ✅ 2026-10-19 用本机 31 个真实会话验通（4,681 条消息 / 2.64M 字符，0 错误）；写入侧同 L1（已验通）；L2 整体在应用内点开尚未单独验 |
-| L3 | ChatGPT 导出 zip → WorkBuddy | 原生续聊 | 导入侧同 L1（已验通）；ChatGPT 解析侧待真包验证 |
+| L2 | DeepSeek Harness → WorkBuddy | 原生续聊（读只读源） | 读取侧 ✅ 2026-10-19 用本机 30 个真实会话验通（4,681 条消息，0 错误）；写入侧同 L1；整体在应用内点开待单独验 |
+| L3 | WorkBuddy ↔ Codex | 原生续聊（双向） | 写入侧结构用 112 个真实 rollout 逐字段对齐（`74ed140`）；**`codex` 自己能否读我们写的文件，未验** |
 
-L2 / L3 的"续聊"能力完全继承 WorkBuddy 写回，各自的风险只在**读取侧**。
-这意味着：把 L1 的真实续聊验通，L2/L3 就只剩解析器的问题，不会再有新的写回风险。
+关键风险不在写入侧，而在**读取侧的理解是否一致**：
+Codex 用自己的解析器读我们生成的 rollout，任何"我们写了、我们也能读"的验证都是循环论证。
+L3 的验收标准因此必须是：`codex resume` 的列表里能看见，点进去能继续发消息。
 
 ---
 
@@ -85,8 +94,10 @@ L2 / L3 的"续聊"能力完全继承 WorkBuddy 写回，各自的风险只在**
 ### 平台适配器（停止投入）
 
 `claude-code` / `cursor` / `vscode-copilot` / `cline` `roo` `kilo` / `continue` /
-`gemini-cli` `qwen-code` `iflow` / `opencode` / `trae` / `vscode-chat` / `goose` / `aider` / `codex`，
+`gemini-cli` `qwen-code` `iflow` / `opencode` / `trae` / `vscode-chat` / `goose` / `aider`，
 以及导入器 `claude-export` / `generic-json` / `markdown`。
+
+（`codex` 已解冻，见 §1。）
 
 处理方式：
 
@@ -96,12 +107,12 @@ L2 / L3 的"续聊"能力完全继承 WorkBuddy 写回，各自的风险只在**
 
 ### 平台分支（关闭）
 
-`docs/parallel-development-plan.zh-CN.md` 里的 8 个平台分支中，只保留 `feat/adapter-chatgpt`。
-以下分支**作废**，不再领任务：`feat/adapter-claude-web`、`feat/adapter-claude-code`、
-`feat/adapter-cursor`、`feat/adapter-copilot`、`feat/adapter-qwen`、`feat/adapter-wenxin`、
-`feat/adapter-deepseek`。
+`docs/parallel-development-plan.zh-CN.md` 里的 8 个平台分支全部作废，不再领任务：
+`feat/adapter-claude-web`、`feat/adapter-claude-code`、`feat/adapter-cursor`、`feat/adapter-copilot`、
+`feat/adapter-qwen`、`feat/adapter-wenxin`、`feat/adapter-deepseek`、`feat/adapter-chatgpt`
+（ChatGPT 移出范围，见 §1）。
 
-已合入的 `feat/adapter-codex`（`docs/lanes/adapter-codex.md`）**冻结维护**：代码留下，不再扩展。
+已合入的 `feat/adapter-codex`（`docs/lanes/adapter-codex.md`）**已解冻**，纳入范围。
 
 ### 不在范围外、继续做的
 
@@ -113,9 +124,17 @@ L2 / L3 的"续聊"能力完全继承 WorkBuddy 写回，各自的风险只在**
 ## 6. 待定，需所有者决策
 
 1. **DeepSeek Harness 要不要成为写回目标？**
-   要 = 新增一份 `docs/format.md` 的 DSH 写回规范 + 一套真实格式样本，工作量不小。
-   不要 = 它就只能是只读来源，L2 单向进 WorkBuddy。
-2. **ChatGPT 要不要做 handoff 交接包？**
-   不做原生写回是确定的；但"压成 Markdown 粘贴给别的 AI"这条路还要不要留。
-3. **ChatGPT 的解析用哪种包？**
-   官方 zip（`conversations.json` + 分支树）和普通 JSON 是两套结构，先按哪个验。
+   Harness 的数据全在本地（`~/.dsh/sessions` + `storages/` + 用量文件），没有云端会话存储，
+   所以这不是"物理不可能"。难点是它是**事件溯源**结构：一个 518 条事件的真实会话里，
+   `step/start` 与 `step/end` 各 86 条、`tool/call` 与 `tool/result` 各 110 条严格配对，
+   还有 `surfaceOp` 历史改写、`request/header` 的模型配置、`turn` 边界。
+   写错一处，Harness 可能拒绝加载或渲染错乱。
+
+   要做的入口不是改代码，是**四次差分实验**（只读文件，不动 Harness）：
+   新建会话发一条 → 复制文件；再发一条 → 再复制；做一次工具调用 → 再复制；
+   触发一次历史压缩 → 再复制。四次 diff 就能反推出增量写入的格式契约。
+   拿到样本之后才谈 `import: true`。
+
+2. **ChatGPT 相关（handoff 交接包、官方 zip 解析）**：已移出范围。
+   会话在服务器上，本地无库可写，只能当只读来源或交接包。
+   代码保留（`src/adapters/exports/chatgpt.js`），不做验收、不写进支持承诺。

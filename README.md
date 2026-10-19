@@ -55,15 +55,18 @@ Windows 也可以直接双击 `start.cmd`；macOS / Linux 用 `./start.sh`。
 
 ---
 
-## 范围（2026-10-19 收敛）
+## 范围（2026-10-19 收敛，同日修订）
 
-当前只承诺三个 Agent 的迁移：**WorkBuddy**、**DeepSeek Harness**、**ChatGPT**（官方导出包）。
+当前承诺三个 Agent 的迁移：**WorkBuddy**、**Codex**、**DeepSeek Harness**。
 
-这三个不对等：只有 WorkBuddy 能原生写回，另外两家是只读来源。所以实际链路是
-**「把 DeepSeek Harness 和 ChatGPT 的历史搬进 WorkBuddy」**，不是三向互迁。
-ChatGPT 的会话在服务器上，本地没有可写的库，这一路永远只能当来源。
+其中 **WorkBuddy 和 Codex 都能原生写回**，所以它们之间可以双向搬、搬过去接着聊。
+DeepSeek Harness 是只读来源。ChatGPT 已移出范围 —— 它的会话在服务器上，本地没有可写的库。
 
-其余平台（Claude Code、Cursor、Copilot、Cline 系、Continue、Gemini CLI、Codex、Trae 等）
+```
+DSH ──→ WorkBuddy ←──→ Codex
+```
+
+其余平台（Claude Code、Cursor、Copilot、Cline 系、Continue、Gemini CLI、Trae 等）
 代码保留但**已冻结**：只修 bug，不做续聊验收，不算支持承诺。详见 [docs/scope.md](docs/scope.md)。
 
 > 下面「支持什么」里的矩阵是代码历史能力记录，**不代表当前支持范围**。
@@ -88,8 +91,8 @@ Ferry 的每个平台支持按"证据等级"分三档，**不要按"代码里有
 | 平台 | 导出 | 导入 | 真实应用点开续聊 |
 |---|---|---|---|
 | **WorkBuddy**（腾讯） | ✅ 63 个真实会话 / 17k 条消息 | ✅ 写回字段与真实文件逐项对齐 | ✅ **2026-10-19 实测通过**：真实会话导入后侧栏可见、点开内容完整、发消息拿到回复，且应用继续往迁移文件里追加事件 |
-| **DeepSeek Harness** | ✅ 31 个真实会话 / 4,681 条消息 / 2.64M 字符，0 错误 | ❌ 不写回 | — |
-| **Codex**（OpenAI） | ✅ 113 个真实会话 | ✅ 写回结构与真实 rollout 逐字段对齐 | ⏳ 待作者验证 |
+| **DeepSeek Harness** | ✅ 30 个真实会话 / 4,681 条消息，0 错误 | ❌ 不写回 | — |
+| **Codex**（OpenAI） | ✅ 95 个活跃 rollout（含归档共 113 个） | ✅ 写回结构与真实 rollout 逐字段对齐 | ⏳ 待作者验证 |
 | **GitHub Copilot Chat** | ✅ 26 个真实会话 | 🧪 | ⏳ |
 | Claude Code / Cursor / Cline / Continue / Trae / Gemini CLI / Qwen / iFlow / OpenCode 等 | 🧪 | 🧪 | ⏳ |
 
