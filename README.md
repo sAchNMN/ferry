@@ -67,6 +67,7 @@ Ferry 的每个平台支持按"证据等级"分三档，**不要按"代码里有
 | 平台 | 导出 | 导入 | 真实应用点开续聊 |
 |---|---|---|---|
 | **Codex**（OpenAI） | ✅ 113 个真实会话 | ✅ 写回结构与真实 rollout 逐字段对齐 | ⏳ 待作者验证 |
+| **WorkBuddy**（腾讯） | ✅ 63 个真实会话 / 17k 条消息 | 🧪 写回字段与真实文件逐项对齐，但没在应用里打开过 | ⏳ |
 | **GitHub Copilot Chat** | ✅ 26 个真实会话 | 🧪 | ⏳ |
 | Claude Code / Cursor / Cline / Continue / Trae / Gemini CLI / Qwen / iFlow / OpenCode 等 | 🧪 | 🧪 | ⏳ |
 
@@ -90,6 +91,7 @@ Ferry 的每个平台支持按"证据等级"分三档，**不要按"代码里有
 | OpenCode | SST | `~/.local/share/opencode/storage/**` | `opencode --session <id>` |
 | Trae / Trae CN | 字节跳动 | `<User>/workspaceStorage/*/chatSessions/*.jsonl` | 聊天历史（实验性） |
 | Windsurf / Kiro / VSCodium | 多家 | 同上（VS Code 系格式） | 聊天历史（实验性） |
+| WorkBuddy | 腾讯 | `~/.workbuddy/projects/<slug>/<sessionId>.jsonl` + `workbuddy.db` 的 `sessions` 表 | 重启应用，侧栏历史列表 |
 
 ### 只能导出（只读解析）
 
@@ -216,7 +218,7 @@ ferry import recent.ferrypack --to claude-code --workspace D:\work\proj
 ## 开发
 
 ```bash
-npm test          # 22 个测试：tar/zip/crypto/归档/脱敏/路径映射/6 类适配器往返
+npm test          # 124 个测试：tar/zip/crypto/归档/脱敏/路径映射/幂等/适配器往返
 node bin/ferry.js doctor
 npm run package   # 生成 dist/ferry-<version>.tar.gz（可直接拷到别的机器）
 ```

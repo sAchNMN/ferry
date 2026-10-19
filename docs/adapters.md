@@ -114,6 +114,7 @@ export default defineImporter({
 | Goose | `~/.local/share/goose/sessions/*.jsonl` | `{role, content:[{type:'text'|'toolRequest'|'toolResponse'}]}` |
 | OpenCode | `~/.local/share/opencode/storage/{session,message,part}/…` | 三级 JSON |
 | Aider | `~/.aider.chat.history.md` | `####` 用户 / `#` 助手 |
+| WorkBuddy | `~/.workbuddy/projects/<slug>/<sessionId>.jsonl` | 行事件（`session-meta` / `message` / `reasoning` / `function_call`(`_result`) / `ai-title`）；索引 `workbuddy.db` 的 `sessions` 表；图片在 `blobs/<前两位>/<sha256>.<ext>` |
 
 版本会变。适配器应当"嗅探 + 容错"，而不是假设字段永远存在。
 
