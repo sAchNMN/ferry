@@ -50,7 +50,7 @@ function makeStore({ id, name, vendor, region, hosts, note }) {
           if (!d.isDirectory()) continue;
           const dir = path.join(wsRoot, d.name);
           const wsJson = await readJson(path.join(dir, 'workspace.json'));
-          const folder = decodeFileUri(wsJson?.folder || wsJson?.workspace || '') || undefined;
+        const folder = decodeFileUri(wsJson?.folder || wsJson?.workspace || '', env.platform) || undefined;
           const sessions = await scanChatDir(path.join(dir, 'chatSessions'), {
             host: h.dir,
             hostLabel: h.label,
@@ -153,7 +153,7 @@ async function readJson(file) {
   }
 }
 
-function decodeFileUri(uri) {
+function decodeFileUri(uri, platform = process.platform) {
   if (!uri || typeof uri !== 'string' || !uri.startsWith('file://')) return '';
   let s = uri.slice('file://'.length);
   try {
@@ -162,7 +162,7 @@ function decodeFileUri(uri) {
     /* keep */
   }
   s = s.replace(/^\/([a-zA-Z]):/, '$1:');
-  return s.replace(/\//g, path.sep === '/' ? '/' : '\\');
+  return platform === 'win32' ? s.replace(/\//g, '\\') : s;
 }
 
 /* ------------------------------------------------------------------ */

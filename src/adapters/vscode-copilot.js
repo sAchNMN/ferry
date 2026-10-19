@@ -43,7 +43,7 @@ export default defineStore({
         if (!d.isDirectory()) continue;
         const dir = path.join(wsRoot, d.name);
         const wsJson = await readJsonSafe(path.join(dir, 'workspace.json'));
-        const folder = decodeFileUri(wsJson?.folder || wsJson?.workspace || '') || undefined;
+        const folder = decodeFileUri(wsJson?.folder || wsJson?.workspace || '', env.platform) || undefined;
         out.push(...(await scanChatDir(path.join(dir, 'chatSessions'), { host, folder, workspaceHash: d.name })));
       }
       out.push(
@@ -77,7 +77,7 @@ export default defineStore({
     if (!(await exists(userDir))) {
       return { writes: [], notes: ['未检测到 VS Code，Copilot Chat 无法原生导入；建议改为导出交接包。'] };
     }
-    const resolved = await resolveWorkspaceDir(userDir, cwd, { create: !opts.dryRun });
+    const resolved = await resolveWorkspaceDir(userDir, cwd, { create: !opts.dryRun, platform: env.platform });
     const targetDir = resolved.sessionsDir;
     const sessionId = uid();
     const file = path.join(targetDir, `${sessionId}.jsonl`);
@@ -438,7 +438,7 @@ function encodeFileUri(p) {
   return `file://${encodeURI(withSlash).replace(/:/g, '%3A')}`;
 }
 
-function decodeFileUri(uri) {
+function decodeFileUri(uri, platform = process.platform) {
   if (!uri || typeof uri !== 'string') return '';
   if (!uri.startsWith('file://')) return '';
   let s = uri.slice('file://'.length);
@@ -449,15 +449,15 @@ function decodeFileUri(uri) {
   }
   s = s.replace(/^\/([a-zA-Z])%?3?[aA]?\//, '/$1:/'); // 容错
   s = s.replace(/^\/([a-zA-Z]):/, '$1:');
-  return s.replace(/\//g, path.sep === '/' ? '/' : '\\');
+  return platform === 'win32' ? s.replace(/\//g, '\\') : s;
 }
 
-export async function resolveWorkspaceDir(userDir, cwd, { create = true } = {}) {
+export async function resolveWorkspaceDir(userDir, cwd, { create = true, platform = process.platform } = {}) {
   const wsRoot = path.join(userDir, 'workspaceStorage');
   if (create) await ensureDir(wsRoot);
   const match = await findExistingDir(wsRoot, async (dir) => {
     const j = await readJsonSafe(path.join(dir, 'workspace.json'));
-    const folder = decodeFileUri(j?.folder || j?.workspace || '');
+    const folder = decodeFileUri(j?.folder || j?.workspace || '', platform);
     return folder && samePathLoose(folder, cwd);
   });
   if (match) {

@@ -7,9 +7,13 @@ import fsp from 'node:fs/promises';
 import { getStore, scanStores } from './registry.js';
 import { safeRead } from './adapter.js';
 import { createBlobStore } from './archive.js';
-import { createConversation, conversationStats, redactConversation, validateConversation } from './ucm.js';
+import { createConversation, conversationStats, conversationFingerprint, redactConversation, validateConversation } from './ucm.js';
 import { createBackup } from './backup.js';
-import { existsSync, nowIso, pathKey, readJson, writeJson } from './util.js';
+import { lookupImport, readLedger, recordImports } from './ledger.js';
+import { mapPath, normalizePath } from './paths.js';
+import { existsSync, nowIso, pathKey, readJson, sha256, sha256File, stableStringify, writeJson } from './util.js';
+
+export { mapPath };
 
 /* ------------------------------------------------------------------ */
 /* 路径映射                                                            */
@@ -17,34 +21,38 @@ import { existsSync, nowIso, pathKey, readJson, writeJson } from './util.js';
 
 /**
  * 解析 "旧路径=新路径" 规则。
- * @returns {{from:string,to:string}[]}
+ *
+ * 也接受 `=>` 分隔（`C:\a => /b`），因为路径里偶尔真的会出现 `=`。
+ * 同一 from 重复出现时以最后一条为准 —— 用户在命令行里覆盖自己之前的规则是很自然的。
+ *
+ * @returns {{from:string,to:string}[]} 按 from 长度降序，保证最长前缀优先
  */
 export function compileMappings(rules = []) {
-  const out = [];
+  const byFrom = new Map();
   for (const rule of rules) {
-    if (!rule) continue;
-    const idx = rule.indexOf('=');
+    if (typeof rule !== 'string') continue;
+    const idx = rule.indexOf('=>') > 0 ? rule.indexOf('=>') : rule.indexOf('=');
     if (idx <= 0) continue;
-    const from = rule.slice(0, idx).trim();
-    const to = rule.slice(idx + 1).trim();
-    if (from && to) out.push({ from, to });
+    const width = rule[idx] === '=' && rule[idx + 1] === '>' ? 2 : 1;
+    const from = normalizePath(rule.slice(0, idx).trim());
+    const to = rule.slice(idx + width).trim();
+    if (from && to) byFrom.set(from.toLowerCase(), { from, to });
   }
-  return out.sort((a, b) => b.from.length - a.from.length);
+  return [...byFrom.values()].sort((a, b) => b.from.length - a.from.length);
 }
 
-export function mapPath(p, mappings = []) {
-  if (!p) return p;
-  const norm = String(p).replace(/\//g, '\\');
-  for (const { from, to } of mappings) {
-    const f = from.replace(/\//g, '\\').replace(/\\+$/, '');
-    const n = norm.replace(/\\+$/, '');
-    if (n === f || n.toLowerCase() === f.toLowerCase()) return to;
-    if (n.toLowerCase().startsWith(f.toLowerCase() + '\\')) {
-      const rest = norm.slice(from.replace(/\//g, '\\').replace(/\\+$/, '').length + 1);
-      return path.join(to, rest);
-    }
-  }
-  return p;
+/**
+ * 把调用方给的各种 map 形态归一成 `{from,to}[]`。
+ *
+ * 历史包袱：JSDoc 曾写 `string[]`，但实现只吃编译过的对象，第三方按 JSDoc 传字符串会崩在
+ * `mapPath` 里（`Cannot read properties of undefined`）。这里两种都接受：
+ *   ['C:\\a=/b']            → 内部编译
+ *   [{ from: 'C:\\a', to: '/b' }] → 原样过滤
+ */
+export function normalizeMap(map) {
+  if (!Array.isArray(map) || !map.length) return [];
+  if (typeof map[0] === 'string') return compileMappings(map);
+  return map.filter((m) => m && typeof m.from === 'string' && typeof m.to === 'string');
 }
 
 export function basenameAny(p) {
@@ -142,6 +150,13 @@ export async function collectForExport(env, opts = {}) {
       continue;
     }
     let conv = r.conv;
+    // 内部会话 = 整段对话里没有一句是用户说的（Codex 的审批 / 子 Agent 自动运行）。
+    //
+    // 注意：不能信 scan 阶段打的 ref.meta.internalSession —— scan 只读文件头部，
+    // 长会话里用户的第一句话可能在很后面，用它会把真实对话误判成内部会话（实测差了 15 个）。
+    // 这里用**完整消息**重新判定。
+    const noUserMessage = !conv.messages.some((m) => m.role === 'user' && !m.meta?.internal);
+    if (opts.excludeInternal && noUserMessage) continue;
     if (!opts.includeSidechain) {
       conv.messages = conv.messages.filter((m) => !m.meta?.sidechain);
     }
@@ -154,6 +169,7 @@ export async function collectForExport(env, opts = {}) {
       exportedAt: nowIso(),
       exporter: 'ferry',
       ...(ref.meta?.archived ? { archived: true } : {}),
+      ...(noUserMessage ? { internalSession: true } : {}),
     };
     if (opts.redact) {
       const red = redactConversation(conv);
@@ -180,8 +196,24 @@ export async function collectForExport(env, opts = {}) {
 
 /**
  * 各适配器在导入时会"原地修改"的索引文件（需要备份）。新建的会话文件不需要。
+ *
+ * 迁移期策略：
+ *   - 适配器若声明了 `backupScope(env)`，优先用它的声明；
+ *   - 否则回落到下面的 switch（历史遗留，仅覆盖已有平台）。
+ * 新平台**不要**往 switch 里加 case —— 在自己的适配器里声明 `backupScope` 即可，
+ * 这样不会有人为了加平台而改本文件（见 docs/contract/ownership.md）。
  */
-export function importScope(adapterId, env, convs = []) {
+export function scopeFromStore(store, env) {
+  if (!store) return [];
+  if (typeof store.backupScope === 'function') {
+    const declared = store.backupScope(env);
+    return Array.isArray(declared) ? declared.filter(Boolean) : [];
+  }
+  return legacyBackupScope(store.id, env);
+}
+
+/** @deprecated 仅作回落，新平台请用适配器的 `backupScope` 声明。 */
+function legacyBackupScope(adapterId, env) {
   const scope = [];
   const add = (p) => p && scope.push(p);
   switch (adapterId) {
@@ -230,6 +262,200 @@ export function importScope(adapterId, env, convs = []) {
 }
 
 /**
+ * 兼容旧入口：按适配器 id 解析备份范围。
+ * 保留这个签名是为了不动 migrate.js 里既有的调用点。
+ */
+export function importScope(adapterId, env, convs = []) {
+  return scopeFromStore(getStore(adapterId), env);
+}
+
+/* ------------------------------------------------------------------ */
+/* ImportPlan v1                                                      */
+/* ------------------------------------------------------------------ */
+
+const PLAN_RESULT = Symbol('ferry.importPlanResult');
+
+function uniquePaths(paths = []) {
+  const out = [];
+  const seen = new Set();
+  for (const value of paths) {
+    if (!value) continue;
+    const p = String(value);
+    const key = p.replace(/\\/g, '/').toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(p);
+  }
+  return out;
+}
+
+async function snapshotDigest(paths = []) {
+  const snapshot = [];
+  for (const file of uniquePaths(paths)) {
+    try {
+      const stat = await fsp.stat(file);
+      const entry = {
+        path: file,
+        exists: true,
+        kind: stat.isFile() ? 'file' : stat.isDirectory() ? 'directory' : 'other',
+        bytes: stat.isFile() ? stat.size : 0,
+        mtimeMs: stat.mtimeMs,
+      };
+      if (stat.isFile()) {
+        entry.sha256 = await sha256File(file).catch(() => null);
+      }
+      snapshot.push(entry);
+    } catch {
+      snapshot.push({ path: file, exists: false });
+    }
+  }
+  return sha256(stableStringify(snapshot));
+}
+
+async function normalizePlanWrites(rawWrites = []) {
+  const writes = [];
+  for (const raw of Array.isArray(rawWrites) ? rawWrites : []) {
+    if (!raw?.path) continue;
+    const file = String(raw.path);
+    let existed = raw.existed;
+    if (typeof existed !== 'boolean') {
+      existed = false;
+      try {
+        existed = (await fsp.stat(file)).isFile();
+      } catch {
+        /* 新文件 */
+      }
+    }
+    const item = {
+      path: file,
+      kind: raw.kind || 'file',
+      existed,
+      bytes: Number.isFinite(raw.bytes) ? raw.bytes : 0,
+    };
+    if (raw.sha256) item.sha256 = raw.sha256;
+    writes.push(item);
+  }
+  return writes;
+}
+
+function inferLosses(store, conv, declared = []) {
+  const losses = Array.isArray(declared) ? [...declared] : [];
+  const blocks = (conv.messages || []).flatMap((m) => (Array.isArray(m.blocks) ? m.blocks : []));
+  if (!store.capabilities?.tools && blocks.some((b) => b.type === 'tool_call' || b.type === 'tool_result')) {
+    losses.push({ kind: 'tools', detail: `${store.name} 不支持工具调用原生导入，将降级为文本或丢弃。` });
+  }
+  if (!store.capabilities?.attachments && blocks.some((b) => b.type === 'image' || b.type === 'file')) {
+    losses.push({ kind: 'attachments', detail: `${store.name} 不支持附件原生导入，附件将降级或跳过。` });
+  }
+  return losses;
+}
+
+function resumeText(store, conv, result, opts) {
+  const resume = result?.resume;
+  if (typeof resume === 'string') return resume;
+  if (resume?.command) return resume.command;
+  if (typeof store.resumeHint === 'function') return store.resumeHint(conv, opts) || '';
+  return '';
+}
+
+/**
+ * 生成单个会话的 ImportPlan。
+ *
+ * 适配器实现 `planImport` 时优先调用；旧适配器则通过 `import(..., { dryRun: true })`
+ * 推导计划并标记 fidelity=inferred。整个函数不会创建目录、备份或写入目标文件。
+ */
+export async function planImport(env, conv, opts = {}) {
+  const store = opts.store || getStore(opts.target);
+  if (!store) throw new Error(`未知的目标：${opts.target}`);
+  if (!store.capabilities?.import) {
+    throw new Error(`${store.name} 暂不支持原生导入，可改用交接包（--to handoff）`);
+  }
+
+  const normalizedMap = normalizeMap(opts.map);
+  const normalizedOpts = { ...opts, map: normalizedMap };
+  const ws = resolveWorkspace(conv, normalizedOpts, env);
+  const runOpts = {
+    ...normalizedOpts,
+    workspace: ws.cwd,
+    dryRun: true,
+    backup: false,
+  };
+  let result;
+  let fidelity = 'inferred';
+  if (typeof store.planImport === 'function') {
+    result = (await store.planImport(env, conv, runOpts)) || {};
+    fidelity = result.fidelity || 'declared';
+  } else {
+    result = (await store.import(env, conv, runOpts)) || {};
+  }
+
+  const writes = await normalizePlanWrites(result.writes);
+  const backupScope = uniquePaths([
+    ...(result.backupScope || scopeFromStore(store, env)),
+    ...writes.filter((w) => w.existed).map((w) => w.path),
+  ]);
+  const locks = uniquePaths([...(result.locks || []), ...backupScope, ...writes.map((w) => w.path)]);
+  const statePaths = uniquePaths([...backupScope, ...writes.map((w) => w.path)]);
+  const stateDigest = await snapshotDigest(statePaths);
+  const resumeInfo = result.resume;
+  const idMap = { ...(result.idMap || {}) };
+  const sourceId = conv.id || conv.source?.sessionId;
+  const targetId = resumeInfo?.sessionId || resumeInfo?.id;
+  if (sourceId && targetId && !idMap[sourceId]) idMap[sourceId] = String(targetId);
+
+  const plan = {
+    version: 1,
+    fidelity,
+    target: {
+      id: store.id,
+      version: String(store.version || store.schemaVersion || store.capabilities?.version || 'unknown'),
+      ...(result.target && typeof result.target === 'object' ? result.target : {}),
+    },
+    writes,
+    backupScope,
+    locks,
+    idMap,
+    losses: inferLosses(store, conv, result.losses),
+    resume: resumeText(store, conv, result, runOpts),
+    stateDigest,
+    notes: Array.isArray(result.notes) ? result.notes : [],
+    workspace: ws.cwd,
+  };
+
+  Object.defineProperty(plan, PLAN_RESULT, { value: result });
+  return plan;
+}
+
+/** 批量生成计划；返回聚合信息，单个计划仍位于 `plans`。 */
+export async function planImports(env, conversations, opts = {}) {
+  const filtered = (Array.isArray(conversations) ? conversations : []).filter((c) => c?.messages?.length);
+  const plans = [];
+  const errors = [];
+  for (const conv of filtered) {
+    try {
+      plans.push(await planImport(env, conv, opts));
+    } catch (err) {
+      errors.push({ title: conv.title, error: err.message });
+    }
+  }
+  const writes = plans.flatMap((p) => p.writes);
+  const backupScope = uniquePaths(plans.flatMap((p) => p.backupScope));
+  const locks = uniquePaths(plans.flatMap((p) => p.locks));
+  return {
+    version: 1,
+    target: plans[0]?.target || { id: opts.target, version: 'unknown' },
+    fidelity: plans.length && plans.every((p) => p.fidelity === 'declared') ? 'declared' : 'inferred',
+    plans,
+    writes,
+    backupScope,
+    locks,
+    losses: plans.flatMap((p) => p.losses),
+    errors,
+    stateDigest: await snapshotDigest(uniquePaths([...backupScope, ...writes.map((w) => w.path)])),
+  };
+}
+
+/**
  * @param {object} env
  * @param {object[]} conversations
  * @param {object} opts
@@ -254,6 +480,10 @@ export async function importConversations(env, conversations, opts = {}) {
   let backupInfo = null;
   const knownPaths = new Set();
   const createdPaths = [];
+  const map = normalizeMap(opts.map);
+  const importOpts = map === opts.map ? opts : { ...opts, map };
+  const ledger = await readLedger(env, { log });
+  const toRecord = {};
 
   if (opts.backup !== false && !opts.dryRun) {
     const scope = importScope(store.id, env);
@@ -268,13 +498,47 @@ export async function importConversations(env, conversations, opts = {}) {
   let i = 0;
   for (const conv of filtered) {
     i++;
-    const ws = resolveWorkspace(conv, opts, env);
+    const fingerprint = conversationFingerprint(conv);
+    const previous = lookupImport(ledger, store.id, fingerprint);
+    if (previous && !opts.force) {
+      results.push({
+        title: conv.title,
+        source: conv.source.name,
+        workspace: previous.workspace || null,
+        writes: [],
+        notes: [`已导入过（${previous.at}），跳过；要强制重导请加 --force`],
+        resume: null,
+        skipped: true,
+        error: null,
+      });
+      onProgress?.({ done: i, total: filtered.length, title: conv.title });
+      continue;
+    }
+
+    const ws = resolveWorkspace(conv, importOpts, env);
     const notes = [];
     if (ws.original && ws.reason === 'unverified' && !existsSync(ws.cwd)) {
       notes.push(`原项目路径在本机不存在：${ws.original}（会话会记录该路径，打开时可能提示找不到目录）`);
     }
     if (ws.original && ws.reason === 'map') notes.push(`路径已映射：${ws.original} → ${ws.cwd}`);
     try {
+      if (opts.dryRun) {
+        const plan = await planImport(env, conv, importOpts);
+        const raw = plan[PLAN_RESULT] || {};
+        results.push({
+          title: conv.title,
+          source: conv.source.name,
+          workspace: ws.cwd,
+          writes: plan.writes,
+          notes: [...notes, ...plan.notes],
+          resume: raw.resume,
+          skipped: false,
+          error: null,
+        });
+        onProgress?.({ done: i, total: filtered.length, title: conv.title });
+        continue;
+      }
+
       const res = await store.import(
         env,
         conv,
@@ -293,8 +557,17 @@ export async function importConversations(env, conversations, opts = {}) {
         writes: res.writes || [],
         notes: [...notes, ...(res.notes || [])],
         resume: res.resume,
+        skipped: false,
         error: null,
       });
+      if (!opts.dryRun) {
+        toRecord[fingerprint] = {
+          at: nowIso(),
+          workspace: ws.cwd,
+          sessionId: res.sessionId || null,
+          resumeCommand: res.resume?.command || null,
+        };
+      }
       // 记录本次新建的文件，回滚时删除（UUID 命名，不会覆盖已有会话）
       for (const w of res.writes || []) {
         if (!w.path || knownPaths.has(w.path)) continue;
@@ -308,10 +581,16 @@ export async function importConversations(env, conversations, opts = {}) {
         workspace: ws.cwd,
         writes: [],
         notes,
+        resume: null,
+        skipped: false,
         error: err.message,
       });
     }
     onProgress?.({ done: i, total: filtered.length, title: conv.title });
+  }
+
+  if (!opts.dryRun && Object.keys(toRecord).length) {
+    await recordImports(env, store.id, toRecord);
   }
 
   if (backupInfo && createdPaths.length) {

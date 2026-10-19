@@ -66,6 +66,20 @@ ${color.bold('常用示例')}
   ${color.gray('# 5. 云端 Agent 没有本地存储？把官方导出转成交接包，粘给任何模型继续')}
   ferry import conversations.zip --to handoff -o ./handoff
 
+  ${color.gray('# 6. 已导入过的会话会自动跳过；确实要再写一份就加 --force')}
+  ferry import backup.ferrypack --to codex --force
+
+  ${color.gray('# 7. 只导出自己参与过的对话（跳过 Codex 审批 / 子 Agent 自动运行）')}
+  ferry export --all --exclude-internal -o mine.ferrypack
+
+${color.bold('导入选项')}
+  --to <agent>      目标 Agent（ferry targets 查看）
+  --workspace <dir> 指定项目目录
+  --map 旧=新       路径映射，可重复
+  --dry-run         只预演，不写盘
+  --force           忽略导入台账，强制重导
+  --no-backup       跳过导入前的自动备份（不推荐）
+
 ${color.bold('通用选项')}
   --json           机器可读输出
   --yes / -y       跳过确认
@@ -79,7 +93,7 @@ export async function main(argv) {
   const cmd = argv[0];
   const args = parseArgs(argv.slice(1), {
     repeat: ['agent', 'id', 'map', 'exclude'],
-    booleans: ['json', 'yes', 'quiet', 'help', 'version', 'all', 'dry-run', 'force', 'encrypt', 'redact', 'open', 'verify', 'verbose'],
+    booleans: ['json', 'yes', 'quiet', 'help', 'version', 'all', 'dry-run', 'force', 'encrypt', 'redact', 'open', 'verify', 'verbose', 'exclude-internal'],
   });
 
   if (args.version || argv[0] === 'version' || argv[0] === '--version' || argv[0] === '-v') {
@@ -237,6 +251,7 @@ async function cmdExport({ env, log, args }) {
     limit: args.limit ? Number(args.limit) : 0,
     last: args.last ? Number(args.last) : 0,
     redact: args.redact !== false,
+    excludeInternal: Boolean(args['exclude-internal']),
     log,
     onProgress: (p) => progress(`读取 ${p.done}/${p.total}  ${truncate(p.title, 40)}`),
   });
@@ -377,6 +392,7 @@ async function cmdImport({ env, log, args }) {
     map: compileMappings(splitList(args.map)),
     into: args.into,
     dryRun: Boolean(args['dry-run']),
+    force: Boolean(args.force),
     backup: !args['no-backup'],
     blobs,
     log,
@@ -384,7 +400,8 @@ async function cmdImport({ env, log, args }) {
   });
   clearProgress();
 
-  const okCount = res.results.filter((r) => !r.error).length;
+  const okCount = res.results.filter((r) => !r.error && !r.skipped).length;
+  const skipped = res.results.filter((r) => r.skipped);
   const fail = res.results.filter((r) => r.error);
   const totalWrites = res.results.reduce((a, r) => a + r.writes.length, 0);
 
@@ -395,7 +412,7 @@ async function cmdImport({ env, log, args }) {
 
   output.write(`\n  ${color.bold('导入结果')}\n`);
   for (const r of res.results) {
-    const mark = r.error ? color.red('✖') : color.green('✔');
+    const mark = r.error ? color.red('✖') : r.skipped ? color.gray('↷') : color.green('✔');
     output.write(`  ${mark} ${truncate(r.title, 44)} ${color.gray(`→ ${r.workspace || ''}`)}\n`);
     if (r.error) output.write(`      ${color.red(r.error)}\n`);
     for (const note of r.notes || []) output.write(`      ${color.gray(note)}\n`);
@@ -403,6 +420,7 @@ async function cmdImport({ env, log, args }) {
 
   output.write('\n');
   if (okCount) log.success(`${plural(okCount, '个会话')}已写入，共 ${totalWrites} 个文件${args['dry-run'] ? color.yellow('（模拟）') : ''}`);
+  if (skipped.length) log.info(`${skipped.length} 个会话此前已导入，已跳过（--force 可强制重导）`);
   if (fail.length) log.warn(`${fail.length} 个会话失败`);
 
   const resumeCmds = [];

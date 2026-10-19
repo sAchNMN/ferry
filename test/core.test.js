@@ -18,8 +18,15 @@ import {
   deriveTitle,
 } from '../src/core/ucm.js';
 import { writePack, readPack, createBlobStore, unpackTo, verifyPack } from '../src/core/archive.js';
-import { compileMappings, mapPath, resolveWorkspace, dedupeConversations } from '../src/core/migrate.js';
-import { makeZip, freshDir, makeEnv } from './helpers.js';
+import {
+  collectForExport,
+  compileMappings,
+  dedupeConversations,
+  mapPath,
+  planImport,
+  resolveWorkspace,
+} from '../src/core/migrate.js';
+import { makeZip, freshDir, makeEnv, seedCodex } from './helpers.js';
 
 /* ------------------------------------------------------------------ */
 
@@ -187,4 +194,93 @@ test('migrate：重复会话去重', () => {
   const a = sampleConversation();
   const b = sampleConversation();
   assert.equal(dedupeConversations([a, b]).length, 1);
+});
+
+test('migrate：ImportPlan 默认包装器零写盘并声明写入/备份/锁范围', async () => {
+  const homeA = await freshDir('plan-src');
+  const homeB = await freshDir('plan-dst');
+  await seedCodex(homeA, 'C:\\old\\proj');
+  const envA = makeEnv(homeA);
+  const envB = makeEnv(homeB);
+  const collected = await collectForExport(envA, { agents: ['codex'], redact: false });
+
+  const plan = await planImport(envB, collected.conversations[0], {
+    target: 'codex',
+    map: ['C:\\old=D:\\new'],
+  });
+
+  assert.equal(plan.version, 1);
+  assert.equal(plan.fidelity, 'inferred');
+  assert.equal(plan.target.id, 'codex');
+  assert.ok(plan.writes.length >= 1);
+  assert.ok(plan.backupScope.some((p) => p.endsWith(path.join('.codex', 'session_index.jsonl'))));
+  assert.ok(plan.locks.includes(plan.writes[0].path));
+  assert.equal(plan.stateDigest.length, 64);
+  assert.equal(
+    await fsp.access(path.join(homeB, '.codex')).then(() => true).catch(() => false),
+    false,
+    '生成计划不能创建目标目录',
+  );
+  assert.match(plan.writes[0].path, /sessions/);
+});
+
+test('migrate：ImportPlan 路径映射保持零写盘', async () => {
+  const homeA = await freshDir('plan-map-src');
+  const homeB = await freshDir('plan-map-dst');
+  await seedCodex(homeA, 'C:\\old\\proj');
+  const envA = makeEnv(homeA);
+  const envB = makeEnv(homeB);
+  const collected = await collectForExport(envA, { agents: ['codex'], redact: false });
+  const plan = await planImport(envB, collected.conversations[0], {
+    target: 'claude-code',
+    map: ['C:\\old=D:\\new'],
+    backup: false,
+  });
+
+  assert.match(plan.writes[0].path, /D--new-proj/);
+  assert.equal(plan.workspace, path.join('D:\\new', 'proj'));
+  assert.equal(
+    await fsp.access(path.join(homeB, '.claude')).then(() => true).catch(() => false),
+    false,
+    '计划生成不能创建目标目录',
+  );
+});
+
+test('migrate：优先调用适配器 planImport 并保留写入/锁/损失声明', async () => {
+  const home = await freshDir('plan-adapter');
+  const env = makeEnv(home);
+  const conv = createConversation({
+    id: 'source-1',
+    title: '计划适配器',
+    messages: [msg.user('hello')],
+  });
+  const planned = [];
+  const store = {
+    id: 'test-target',
+    name: '测试目标',
+    version: '2',
+    capabilities: { import: true, tools: false, attachments: false },
+    async planImport(_env, _conv, opts) {
+      planned.push(opts);
+      return {
+        writes: [{ path: path.join(home, 'target.json'), kind: 'session', bytes: 12 }],
+        backupScope: [path.join(home, 'index.json')],
+        locks: [path.join(home, 'target.json')],
+        losses: [{ kind: 'thinking', detail: '目标不保留思考块' }],
+      };
+    },
+    async import() {
+      assert.fail('实现 planImport 后不应调用旧 import');
+    },
+  };
+
+  const plan = await planImport(env, conv, { store, workspace: path.join(home, 'project') });
+  assert.equal(plan.fidelity, 'declared');
+  assert.equal(plan.target.version, '2');
+  assert.equal(plan.backupScope[0], path.join(home, 'index.json'));
+  assert.ok(plan.locks.includes(path.join(home, 'target.json')));
+  assert.equal(plan.losses[0].kind, 'thinking');
+  assert.equal(planned[0].dryRun, true);
+  assert.equal(planned[0].backup, false);
+  assert.equal(await fsp.access(path.join(home, 'target.json')).then(() => true).catch(() => false), false);
 });

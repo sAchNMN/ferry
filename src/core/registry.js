@@ -2,6 +2,7 @@
  * 适配器注册表：发现、扫描、匹配文件格式。
  */
 import { stores, importers } from '../adapters/index.js';
+import { ALIASES } from './aliases.js';
 import { mapLimit } from './util.js';
 
 export function allStores() {
@@ -15,29 +16,6 @@ export function allImporters() {
 export function getStore(id) {
   return stores.find((s) => s.id === id) || checkAlias(id);
 }
-
-const ALIASES = {
-  claude: 'claude-code',
-  'claude-code': 'claude-code',
-  copilot: 'vscode-copilot',
-  'github-copilot': 'vscode-copilot',
-  vscode: 'vscode-copilot',
-  roo: 'cline',
-  kilo: 'cline',
-  'roo-code': 'cline',
-  'kilo-code': 'cline',
-  qwen: 'qwen-code',
-  gemini: 'gemini-cli',
-  'iflow-cli': 'iflow',
-  'open-code': 'opencode',
-  aider: 'aider',
-  block: 'goose',
-  'trae-cn': 'trae',
-  trae: 'trae',
-  windsurf: 'vscode-chat',
-  kiro: 'vscode-chat',
-  vscodium: 'vscode-chat',
-};
 
 function checkAlias(id) {
   const real = ALIASES[id];

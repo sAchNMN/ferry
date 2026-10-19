@@ -13,9 +13,11 @@ Ferry 是一个零依赖、跨平台（Windows / macOS / Linux）的本地工具
 ```
 
 - **零安装**：只需要 Node.js ≥ 22.5，没有 npm 依赖，不联网。
-- **真·续聊**：不是导出成 Markdown 让你重开一段，而是写进 Claude Code / Codex / Cursor 等的原生存储。
+- **真·续聊**：不是导出成 Markdown 让你重开一段，而是写进目标 Agent 的原生存储。
+  **目前只有 Codex 经过真实数据验证**，其余平台请先看下面的「验证状态」。
 - **可回滚**：每次写入前自动备份，一条命令撤销。
 - **默认脱敏**：导出时把 API Key、Token 打码，避免把密钥带进归档。
+- **幂等**：同一个归档重复导入不会产生副本（台账在 `~/.ferry/imported.json`，`--force` 可强制重导）。
 
 ---
 
@@ -29,14 +31,13 @@ node bin/ferry.js scan
 node bin/ferry.js export --all -o backup.ferrypack
 
 # 3. 把 backup.ferrypack 拷到新电脑，先看它准备写什么
-node bin/ferry.js import backup.ferrypack --to claude-code --dry-run
+node bin/ferry.js import backup.ferrypack --to codex --dry-run
 
 # 4. 确认后真正写入
-node bin/ferry.js import backup.ferrypack --to claude-code --workspace D:\work\myproj
+node bin/ferry.js import backup.ferrypack --to codex --workspace D:\work\myproj
 
 # 5. 按提示接着用
-cd D:\work\myproj
-claude --resume
+codex resume
 ```
 
 图形界面：
@@ -50,6 +51,28 @@ Windows 也可以直接双击 `start.cmd`；macOS / Linux 用 `./start.sh`。
 ---
 
 ## 支持什么
+
+### 验证状态（先看这里）
+
+Ferry 的每个平台支持按"证据等级"分三档，**不要按"代码里有"判断能不能用**：
+
+| 档位 | 含义 |
+|---|---|
+| ✅ 真实数据验证 | 用作者本机的真实会话跑通过 |
+| 🧪 夹具验证 | 只有合成测试数据，没碰过真实文件 |
+| ⏳ 未验证 | 代码写了，但一次都没测过 |
+
+当前实况：
+
+| 平台 | 导出 | 导入 | 真实应用点开续聊 |
+|---|---|---|---|
+| **Codex**（OpenAI） | ✅ 113 个真实会话 | ✅ 写回结构与真实 rollout 逐字段对齐 | ⏳ 待作者验证 |
+| **GitHub Copilot Chat** | ✅ 26 个真实会话 | 🧪 | ⏳ |
+| Claude Code / Cursor / Cline / Continue / Trae / Gemini CLI / Qwen / iFlow / OpenCode 等 | 🧪 | 🧪 | ⏳ |
+
+一句话：**如果你只用 Codex，现在可以用；用别的平台，请自己先在一个不重要的会话上试。**
+
+### 实现清单（下面这些是"代码支持"，不等于"验证过"）
 
 ### 能"原生导入、重启即续聊"的
 
