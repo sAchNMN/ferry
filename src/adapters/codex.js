@@ -48,16 +48,24 @@ export default defineStore({
         meta.id = m[1];
       }
       const idx = index.get(meta.id);
+      // 索引里的 thread_name 也可能是注入文本：Codex 给内部会话起名时直接用了提示词原文。
+      // 实测本机 112 个会话里有 30 个中招，所以这里也要过一遍同样的判定。
+      const idxTitle = isSyntheticUserText(idx?.thread_name) ? '' : idx?.thread_name;
+      const realTitle = idxTitle || meta.firstUser;
+      // 没有真实标题 = 整段对话里没有一句是用户自己说的。
+      // 实测本机 112 个会话里 69 个属于这类（Codex 的审批/子 Agent 自动运行）。
+      // 它们不是用户的历史对话，标出来让上层可以过滤或降级展示。
+      const internalSession = !realTitle;
       out.push({
         id: meta.id,
-        title: idx?.thread_name || meta.firstUser || `Codex ${meta.id.slice(0, 8)}`,
+        title: realTitle || `Codex 内部会话 ${meta.id.slice(0, 8)}`,
         path: file,
         createdAt: meta.timestamp,
         updatedAt: idx?.updated_at || (st.mtime ? st.mtime.toISOString() : undefined),
         bytes: st.size,
         workspace: meta.cwd,
         preview: meta.firstUser,
-        meta: { archived: file.includes('archived_sessions') },
+        meta: { archived: file.includes('archived_sessions'), ...(internalSession ? { internalSession: true } : {}) },
       });
     }
     // 同一会话可能同时存在于 sessions 与 archived_sessions，保留更新的那份
@@ -432,15 +440,25 @@ function textOf(m) {
  * Codex 会把 AGENTS.md、环境上下文、权限说明作为「user 消息」写进 rollout。
  * 这些不是用户真正说的话，标记为 internal：归档里保留，渲染/导入时默认跳过。
  */
+/**
+ * 判断一条 user 消息是否是**机器注入**的，而不是用户真的说的话。
+ *
+ * 真实数据里存在大量这类消息：AGENTS.md 指令、environment_context、
+ * 以及审批子系统塞进来的 "The following is the Codex agent history…"。
+ * 它们会被当成"首条用户消息"，导致会话标题变成一大段系统提示（实测 112 个会话里 47 个中招），
+ * 而且会把内部提示当成对话内容迁移到目标端。
+ */
 function isSyntheticUserText(text) {
   const t = String(text || '').trimStart();
   if (!t) return false;
+  const head = t.slice(0, 200);
   return (
-    t.startsWith('# AGENTS.md instructions') ||
-    t.startsWith('<environment_context>') ||
-    t.startsWith('<user_instructions>') ||
-    t.startsWith('<permissions instructions>') ||
-    (t.startsWith('# ') && t.includes('<INSTRUCTIONS>') && t.length > 500)
+    // 通用规则：以 XML 风格标签开头的都不是用户手打的
+    // （<environment_context> / <user_instructions> / <permissions instructions> / <recommended_plugins> …）
+    /^<[a-z][\w-]*>/i.test(head) ||
+    head.startsWith('# AGENTS.md instructions') ||
+    head.startsWith('The following is the Codex agent history') ||
+    (head.startsWith('# ') && t.includes('<INSTRUCTIONS>') && t.length > 500)
   );
 }
 

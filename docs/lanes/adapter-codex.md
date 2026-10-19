@@ -52,12 +52,14 @@ package.json
 | `turn_context` | 补 `root_turn_id` / `workspace_roots` / `current_date` / `timezone` |
 | `response_item` | 补 `id` 与 `internal_chat_message_metadata_passthrough`（message / function_call / function_call_output） |
 | dry-run 预览 | 原先只报 rollout，漏报 `session_index.jsonl`，用户按预览判断风险是错的；已补 |
+| 标题取词 | 跳过机器注入的 user 消息（AGENTS.md / environment_context / 审批提示等）与同样被污染的 `thread_name`；实测 112 个会话里 47 个曾把系统提示当标题，现为 **0** |
+| 内部会话标记 | 整段无真实用户消息的会话（实测 69/112，Codex 的审批/子 Agent 自动运行）标 `meta.internalSession`，标题显式写成「Codex 内部会话 xxxxxxxx」 |
 
 ## 待做
 
 | 项 | 说明 |
 |---|---|
-| 标题丢失 | `scan` 已从 `session_index.jsonl` 拿到 `thread_name`，但 `read()` 用 `deriveTitle` 覆盖成首条消息截断 |
+| 导出时过滤内部会话 | `collectForExport` 目前丢掉 `ref.meta.internalSession`，需要 `--exclude-internal` |
 | `event_msg` / `world_state` / `token_usage_record` | 遥测与 UI 事件，评估是否影响 resume；倾向不写（真实文件里它们是运行时产物） |
 | `reasoning` 类 response_item | 我们目前不产出（thinking 块没写进去），`status` / `summary` / `encrypted_content` 属于这类条目 |
 
