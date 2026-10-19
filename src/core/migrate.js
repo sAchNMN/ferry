@@ -180,8 +180,24 @@ export async function collectForExport(env, opts = {}) {
 
 /**
  * 各适配器在导入时会"原地修改"的索引文件（需要备份）。新建的会话文件不需要。
+ *
+ * 迁移期策略：
+ *   - 适配器若声明了 `backupScope(env)`，优先用它的声明；
+ *   - 否则回落到下面的 switch（历史遗留，仅覆盖已有平台）。
+ * 新平台**不要**往 switch 里加 case —— 在自己的适配器里声明 `backupScope` 即可，
+ * 这样不会有人为了加平台而改本文件（见 docs/contract/ownership.md）。
  */
-export function importScope(adapterId, env, convs = []) {
+export function scopeFromStore(store, env) {
+  if (!store) return [];
+  if (typeof store.backupScope === 'function') {
+    const declared = store.backupScope(env);
+    return Array.isArray(declared) ? declared.filter(Boolean) : [];
+  }
+  return legacyBackupScope(store.id, env);
+}
+
+/** @deprecated 仅作回落，新平台请用适配器的 `backupScope` 声明。 */
+function legacyBackupScope(adapterId, env) {
   const scope = [];
   const add = (p) => p && scope.push(p);
   switch (adapterId) {
@@ -227,6 +243,14 @@ export function importScope(adapterId, env, convs = []) {
       break;
   }
   return scope;
+}
+
+/**
+ * 兼容旧入口：按适配器 id 解析备份范围。
+ * 保留这个签名是为了不动 migrate.js 里既有的调用点。
+ */
+export function importScope(adapterId, env, convs = []) {
+  return scopeFromStore(getStore(adapterId), env);
 }
 
 /**

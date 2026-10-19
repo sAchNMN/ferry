@@ -50,10 +50,34 @@ export default defineStore({ id: 'my-agent', name: 'My Agent', scan, read });
   scan(env): Promise<ScanRef[]>,
   read(env, ref, ctx): Promise<Conversation>,   // UCM 对象
   import?(env, conv, opts): Promise<ImportResult>,  // 仅 capabilities.import === true 时必需
+  backupScope?(env): string[],                  // 导入时会原地改写的索引/DB 文件
   resumeHint?(conv): string,
   docs?: string,
 }
 ```
+
+### 2.1 备份范围声明（迁移期机制）
+
+导入前必须备份"会被原地改写"的索引或数据库。这段逻辑原本硬编码在 `migrate.js` 的 switch 里，
+每加一个平台就要改核心文件 —— 这是并行开发的一个隐性冲突点。现在改成两段式：
+
+```js
+// 优先：适配器自己声明
+backupScope(env) {
+  return [path.join(env.home, '.my-agent', 'index.json')];
+}
+
+// 回落：migrate.js 的 legacyBackupScope switch（仅覆盖已有平台）
+```
+
+规则：
+
+- **声明优先**。适配器有 `backupScope` 就完全以它为准，即使返回空数组也不回落
+  （空数组 = 明确表示"本次导入不改写任何既有文件"）。
+- **返回值必须是绝对路径数组**。返回非数组、或数组里混入 null/undefined，视为声明有误：
+  非数组按空处理，数组里的空值被过滤（见 `test/contract/backup-scope.test.js`）。
+- **新平台禁止往 switch 加 case**。switch 只作历史回落，不再接受新分支。
+- 未知或不支持导入的平台返回空数组，**不猜路径** —— 宁可少备份，也不去碰一个没验证过的文件。
 
 **ScanRef**
 ```js
