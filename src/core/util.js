@@ -8,7 +8,8 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 
-export const VERSION = '0.1.0';
+// 必须与 package.json 的 version 同步，test/core/version.test.js 会强制校验
+export const VERSION = '0.2.0';
 
 /* ------------------------------------------------------------------ */
 /* 错误                                                                */
