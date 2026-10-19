@@ -1,5 +1,9 @@
 # Ferry · AI 会话摆渡
 
+[![test](https://github.com/sAchNMN/ferry/actions/workflows/test.yml/badge.svg)](https://github.com/sAchNMN/ferry/actions/workflows/test.yml)
+[![node](https://img.shields.io/badge/node-%E2%89%A522.5-informational)](https://nodejs.org)
+[![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 > 把 AI Agent 的对话历史，从一台电脑完整搬到另一台，并在目标 Agent 里**接着用**。
 
 Ferry 是一个零依赖、跨平台（Windows / macOS / Linux）的本地工具。它读取各家的本地会话存储，
