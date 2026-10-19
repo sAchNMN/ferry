@@ -433,7 +433,9 @@ async function cmdImport({ env, log, args }) {
   if (resumeCmds.length && !args['dry-run']) {
     output.write(`\n  ${color.bold('怎么接着用')}\n`);
     for (const r of resumeCmds) {
-      output.write(`    cd "${r.cwd}"\n    ${r.command}\n`);
+      output.write(`    cd "${r.cwd}"\n`);
+      // GUI 类目标没有命令可敲（resume 只给 sessionId），不要打一行 "undefined"
+      if (r.command) output.write(`    ${r.command}\n`);
     }
     const hint = store.resumeHint?.(null, resumeCmds[0]);
     if (hint) output.write(`    ${color.gray(hint)}\n`);

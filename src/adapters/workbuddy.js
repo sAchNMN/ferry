@@ -100,6 +100,7 @@ export default defineStore({
         const meta = parseHead(head);
 
         const title = pickTitle(row, meta, id);
+        const settings = pickSettings(row);
         out.push({
           id,
           title,
@@ -109,6 +110,9 @@ export default defineStore({
           bytes: st.size,
           workspace: row?.cwd || meta.cwd,
           preview: meta.firstUser,
+          // 模型与会话设置只从 sessions 表来；文件里没有这两层
+          ...(row?.model ? { model: row.model } : {}),
+          ...(Object.keys(settings).length ? { settings } : {}),
           meta: {
             projectSlug: d.name,
             // 注意：这里**不**打 internalSession —— scan 只读文件头，长会话里用户第一句话
@@ -253,6 +257,10 @@ export default defineStore({
     const hasUser = Boolean(firstUser);
     const derived = firstUser ? firstLine(textOf(firstUser), 100) : '';
 
+    // JSONL 里拿不到模型时退回 sessions 表那一列 —— 真机上 model 从不为空，
+    // 写回时留 null 会让侧栏显示空白。这个模型只用于元数据，不参与推断。
+    if (!model && ref.model) model = ref.model;
+
     return createConversation({
       id: sessionId,
       title: firstLine(ref.title, 120) || (aiTitle && !looksSynthetic(aiTitle) ? aiTitle : '') || derived || `WorkBuddy 会话 ${String(sessionId).slice(0, 8)}`,
@@ -271,6 +279,8 @@ export default defineStore({
       meta: {
         ...(sessionMeta?.['codebuddy.ai/hostKind'] ? { hostKind: sessionMeta['codebuddy.ai/hostKind'] } : {}),
         ...(aiTitle ? { aiTitle } : {}),
+        // 会话级设置原样带到写回侧；跨适配器（Codex/DSH/ChatGPT）来源没有这一层，自然为空
+        ...(Object.keys(ref.settings || {}).length ? { sessionSettings: ref.settings } : {}),
         // 和 Codex 一样：整段没有一句是用户说的（自动化跑批）就标出来，让上层能过滤
         ...(hasUser ? {} : { internalSession: true }),
       },
@@ -447,6 +457,7 @@ export default defineStore({
         createdAt: toMs(conv.createdAt) ?? now,
         updatedAt: toMs(conv.updatedAt) ?? now,
         model,
+        settings: conv.meta?.sessionSettings || {},
       });
       if (registered) {
         writes.push(writeRecord(dbFile, '', 'workbuddy-db'));
@@ -669,6 +680,35 @@ function wbId() {
 /* ---------------------------- 索引读取 ---------------------------- */
 
 /**
+ * 会话级设置列：源行里有、且应用打开会话时会读的字段。
+ *
+ * 为什么要单独带：这些列在真机上**从来没有一个是 null**（55 个未删除会话，0 个空），
+ * 说明应用把它们当既有状态用。以前写回靠 `insertLoose` 从模板行抄，等于把别人的
+ * 权限设置安到你的会话上（实测 source_mode 从 craft 变 coding、permission_mode 从
+ * fullAccess 变 bypassPermissions）。正确做法是原样带过去。
+ */
+const SESSION_SETTING_COLUMNS = [
+  'source_mode',
+  'mode',
+  'permission_mode',
+  'use_sandbox_cli',
+  'context_window',
+  'thought_level',
+  'addon_selection',
+  'session_settings',
+];
+
+/** 从 sessions 行里挑出有值的设置列。跨适配器导入时源端没有这些，返回空对象。 */
+function pickSettings(row) {
+  const out = {};
+  if (!row) return out;
+  for (const c of SESSION_SETTING_COLUMNS) {
+    if (row[c] !== undefined && row[c] !== null) out[c] = row[c];
+  }
+  return out;
+}
+
+/**
  * 读 sessions 表（只读）。应用在跑的时候库是 WAL 模式，读得到。
  * 任何失败都不阻断 —— 没有索引也能靠 JSONL 本身工作，只是标题和更新时间会退化。
  */
@@ -680,7 +720,7 @@ async function readSessionIndex(dbFile) {
     db = await openDb(dbFile, { readOnly: true });
     if (!tableExists(db, 'sessions')) return map;
     const cols = new Set(columns(db, 'sessions').map((c) => c.name));
-    const want = ['id', 'cwd', 'title', 'custom_title', 'created_at', 'updated_at', 'last_activity_at', 'deleted_at', 'is_background_automation'];
+    const want = ['id', 'cwd', 'title', 'custom_title', 'created_at', 'updated_at', 'last_activity_at', 'deleted_at', 'is_background_automation', 'model', ...SESSION_SETTING_COLUMNS];
     const picked = want.filter((c) => cols.has(c));
     const rows = db.prepare(`SELECT ${picked.map((c) => `"${c}"`).join(',')} FROM "sessions"`).all();
     for (const row of rows) if (row.id) map.set(row.id, row);
@@ -737,7 +777,20 @@ function userIdFromStorage(root) {
 /**
  * 往 sessions 表插一行。user_id 必须沿用本机已有的值 —— 换了 id 应用会当成别的账号的数据。
  * 表结构随版本变，所以用 insertLoose（读现有行当模板 + 动态列）。
+ *
+ * 会话设置分两种情况：
+ * - 源就是 WorkBuddy（L1）：`settings` 带着源会话的真实值，原样写入；
+ * - 源是别的 Agent（L2/L3）：源端没有这一层，用下面的 `DEFAULT_SETTINGS`。
+ *   这四个字段在真机上 55 个未删除会话里**一个空的都没有**，留 null 是没被验证过的状态，
+ *   所以必须给显式默认值，不能指望应用兜底。
  */
+const DEFAULT_SETTINGS = {
+  source_mode: 'craft',
+  mode: 'craft',
+  permission_mode: 'fullAccess',
+  use_sandbox_cli: 1,
+};
+
 async function registerSession(env, info) {
   const root = wbRoot(env);
   const dbFile = path.join(root, 'workbuddy.db');
@@ -747,6 +800,7 @@ async function registerSession(env, info) {
     if (!tableExists(db, 'sessions')) return false;
     const template = sampleRow(db, 'sessions');
     const userId = template?.user_id || userIdFromStorage(root) || 'ferry-import';
+    const settings = { ...DEFAULT_SETTINGS, ...(info.settings || {}) };
     insertLoose(
       db,
       'sessions',
@@ -764,13 +818,17 @@ async function registerSession(env, info) {
         is_playground: 0,
         is_background_automation: 0,
         model: info.model || template?.model || null,
+        ...settings,
       },
       template,
     );
-    // workspaces 只是"最近打开的项目"列表，写不进去不影响可见性
+    // workspaces 只是"最近打开的项目"列表，写不进去不影响可见性。
+    // 注意：这张表的既有行全是原生分隔符（Windows 用反斜杠），
+    // 而 sessions.cwd 用正斜杠 —— 两处格式不同，混用会让侧栏多出一个"野"项目。
     if (tableExists(db, 'workspaces')) {
       try {
-        db.prepare('INSERT OR IGNORE INTO "workspaces" ("path","last_opened_at") VALUES (?,?)').run(info.cwd, info.updatedAt);
+        const wsPath = env.platform === 'win32' ? info.cwd.replace(/\//g, '\\') : info.cwd;
+        db.prepare('INSERT OR IGNORE INTO "workspaces" ("path","last_opened_at") VALUES (?,?)').run(wsPath, info.updatedAt);
       } catch {
         /* 列名变了就放弃，不影响主流程 */
       }

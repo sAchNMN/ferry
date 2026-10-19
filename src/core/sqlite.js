@@ -76,7 +76,10 @@ export function insertLoose(db, table, row, template = null) {
       values.push(json(row[c.name]));
       continue;
     }
-    if (template && template[c.name] !== undefined) {
+    // 模板只用来满足 NOT NULL 约束，不复制业务字段。
+    // 早期版本对所有缺列都套模板值，结果是"随便取的第一行"把迁移会话的
+    // source_mode / permission_mode 等设置改写成了别人的值（2026-10-19 真机复现）。
+    if (template && template[c.name] !== undefined && c.notnull) {
       names.push(c.name);
       values.push(json(template[c.name]));
       continue;
