@@ -69,6 +69,9 @@ ${color.bold('常用示例')}
   ${color.gray('# 6. 已导入过的会话会自动跳过；确实要再写一份就加 --force')}
   ferry import backup.ferrypack --to codex --force
 
+  ${color.gray('# 7. 只导出自己参与过的对话（跳过 Codex 审批 / 子 Agent 自动运行）')}
+  ferry export --all --exclude-internal -o mine.ferrypack
+
 ${color.bold('导入选项')}
   --to <agent>      目标 Agent（ferry targets 查看）
   --workspace <dir> 指定项目目录
@@ -90,7 +93,7 @@ export async function main(argv) {
   const cmd = argv[0];
   const args = parseArgs(argv.slice(1), {
     repeat: ['agent', 'id', 'map', 'exclude'],
-    booleans: ['json', 'yes', 'quiet', 'help', 'version', 'all', 'dry-run', 'force', 'encrypt', 'redact', 'open', 'verify', 'verbose'],
+    booleans: ['json', 'yes', 'quiet', 'help', 'version', 'all', 'dry-run', 'force', 'encrypt', 'redact', 'open', 'verify', 'verbose', 'exclude-internal'],
   });
 
   if (args.version || argv[0] === 'version' || argv[0] === '--version' || argv[0] === '-v') {
@@ -248,6 +251,7 @@ async function cmdExport({ env, log, args }) {
     limit: args.limit ? Number(args.limit) : 0,
     last: args.last ? Number(args.last) : 0,
     redact: args.redact !== false,
+    excludeInternal: Boolean(args['exclude-internal']),
     log,
     onProgress: (p) => progress(`读取 ${p.done}/${p.total}  ${truncate(p.title, 40)}`),
   });

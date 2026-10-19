@@ -150,6 +150,13 @@ export async function collectForExport(env, opts = {}) {
       continue;
     }
     let conv = r.conv;
+    // 内部会话 = 整段对话里没有一句是用户说的（Codex 的审批 / 子 Agent 自动运行）。
+    //
+    // 注意：不能信 scan 阶段打的 ref.meta.internalSession —— scan 只读文件头部，
+    // 长会话里用户的第一句话可能在很后面，用它会把真实对话误判成内部会话（实测差了 15 个）。
+    // 这里用**完整消息**重新判定。
+    const noUserMessage = !conv.messages.some((m) => m.role === 'user' && !m.meta?.internal);
+    if (opts.excludeInternal && noUserMessage) continue;
     if (!opts.includeSidechain) {
       conv.messages = conv.messages.filter((m) => !m.meta?.sidechain);
     }
@@ -162,6 +169,7 @@ export async function collectForExport(env, opts = {}) {
       exportedAt: nowIso(),
       exporter: 'ferry',
       ...(ref.meta?.archived ? { archived: true } : {}),
+      ...(noUserMessage ? { internalSession: true } : {}),
     };
     if (opts.redact) {
       const red = redactConversation(conv);
