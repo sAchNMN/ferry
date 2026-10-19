@@ -7,6 +7,10 @@ Ferry 的适配器分两类：
 
 每个适配器都是纯 ESM 模块，只依赖 `src/core`，不引入第三方包。
 
+> **范围冻结（2026-10-19）**：本项目当前只维护 **WorkBuddy / DeepSeek Harness / ChatGPT** 三个适配器。
+> 本指南作为协议说明仍然有效，但**暂停接受新的平台适配器**；其余适配器进入冻结态，只修 bug。
+> 见 [scope.md](scope.md)。
+
 ## 1. Store 协议
 
 ```js

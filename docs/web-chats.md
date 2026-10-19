@@ -42,6 +42,16 @@ Ferry 会沿 `current_node` 回溯主分支，把 `text` / `multimodal_text` / `
 ferry import conversations.json --to claude-code --workspace D:\work\proj
 ```
 
+### DeepSeek Harness（本地会话）
+
+DeepSeek Harness 的本地会话会落在 `.dsh/sessions/` 下，Ferry 可以读取普通 JSONL 和拼接的 `.jsonl.zstd`，
+再迁移到 Claude Code、Codex 等支持原生导入的本地 Agent：
+
+```bash
+ferry export --agent deepseek-harness -o deepseek.ferrypack
+ferry import deepseek.ferrypack --to claude-code --workspace D:\work\proj
+```
+
 ### Gemini
 
 Google Takeout → **My Activity → Gemini Apps**，导出 JSON 或 HTML。
@@ -109,7 +119,8 @@ ferry export --all --since 14d --to handoff -o ./handoff
 | ChatGPT | ✅ 全量 zip | ✅ | 导出 zip → 归档 / 交接包 |
 | Claude | ✅ 全量 JSON | ✅ | 同上 |
 | Gemini | ✅ Takeout（活动记录） | ❌ | 复制为 Markdown 或通用 JSON |
-| DeepSeek | ❌ | ❌ | 复制对话为 Markdown → `ferry import` |
+| DeepSeek 网页版 | ❌ | ❌ | 复制对话为 Markdown → `ferry import` |
+| DeepSeek Harness | 本地 JSONL / zstd | ✅（只读） | 导出后迁移到本地 Agent |
 | Kimi | ❌ | ❌ | 同上 |
 | 豆包 | ❌ | ❌ | 同上 |
 | 通义千问 | ❌ | ❌ | 同上 |
