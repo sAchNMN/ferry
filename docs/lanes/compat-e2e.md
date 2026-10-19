@@ -82,6 +82,14 @@ todo 是"已知缺口清单"，skip 是"假装不存在"。
 | 2 | 中 | Codex 的 `session_index.jsonl` 里有 `thread_name`，但 `read()` 用 `deriveTitle` 覆盖，用户起的会话名变成首条消息截断 | adapter 分支 |
 | 3 | 中 | `importConversations({ map })` 的 JSDoc 写 `string[]`，实际必须传 `compileMappings()` 处理过的 `{from,to}[]`。传原始字符串会在 `mapPath` 里崩成 `Cannot read properties of undefined (reading 'replace')` | `feat/migration-engine`（建议内部自动编译，或至少抛带说明的错误） |
 
+### 修复进度
+
+- **#1 已修**：`feat/migration-engine` @ `1d97bd6` 引入导入台账（`<ferryHome>/imported.json`）
+  与 `--force`。合入 `integration` 后，把本文件 `幂等` 那条用例的 `todo` 标记去掉即可转正。
+- **#3 已修**：同提交的 `normalizeMap()`，`map` 同时接受 `['A=B']` 与 `[{from,to}]`。
+  合入后「map 参数」相关的 todo/备注可删。
+- **#2 未修**：等 Codex 适配器分支。
+
 ## 提交
 
 - Conventional Commits，描述中文：`test(e2e): 覆盖跨平台路径映射`
