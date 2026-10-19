@@ -13,7 +13,7 @@
 | `docs/format.md` | ferrypack/1 与 UCM/1 格式规范 | RFC + 契约负责人实施 |
 | `docs/contract/adapter-interface.md` | 适配器契约 | RFC + 契约负责人实施 |
 | `docs/contract/ownership.md` | 本文件 | 契约负责人 |
-| `src/core/ucm.js` 的模型部分 | `UCM_SCHEMA` / `createConversation` / `validateConversation` / `block` / `msg` | RFC；拆分完成后归契约分支 |
+| `src/core/ucm-model.js` | 结构定义 / 构造 / 校验 / 统计 | RFC；UCM 契约本体 |
 | `src/core/aliases.js` | 全局别名命名空间 | 集成负责人统一提交 |
 | `package.json` 的 `dependencies` | 本项目维持零运行时依赖 | 集成负责人决策 |
 
@@ -25,7 +25,11 @@
 | `src/adapters/index.js` | `feat/contracts-v1` | 聚合出口，已退化为 10 行 |
 | `src/core/adapter.js` | `feat/contracts-v1` | `defineStore` / `defineImporter` |
 | `src/core/registry.js` | `feat/contracts-v1` | 扫描编排与别名解析 |
-| `src/core/ucm.js` 的渲染/脱敏部分 | `feat/package-conversion` | `renderMarkdown` / `renderHandoff` / `redactConversation` |
+| `src/core/ucm.js` | `feat/contracts-v1` | 仅 re-export，不含逻辑；分层契约测试会拦 |
+| `src/core/ucm-render.js` | `feat/package-conversion` | `renderMarkdown` / `renderHandoff` / `localStamp` |
+| `src/core/ucm-redact.js` | `feat/package-conversion` | `redactText` / `redactConversation` |
+| `src/core/ucm-text.js` | `feat/package-conversion` | 会话 → 纯文本，渲染与指纹的共同底座 |
+| `src/core/ucm-identity.js` | `feat/migration-engine` | 指纹与内容哈希，直接决定去重正确性 |
 | `src/core/migrate.js` | `feat/migration-engine` | 迁移编排、路径映射、去重 |
 | `src/core/backup.js` | `feat/migration-engine` | 备份与回滚 |
 | `src/core/sqlite.js` | `feat/migration-engine` | SQLite 读写唯一入口，其他分支禁自引驱动 |
@@ -65,8 +69,11 @@
 |---|---|
 | `src/adapters/index.js` 手写 import + 数组 | 自动发现，新增平台不改此文件 |
 | `src/core/registry.js` 内联 `ALIASES` | 移到 `src/core/aliases.js` |
+| `src/adapters/web-exports.js` 单文件混 4 个 importer | 拆到 `src/adapters/exports/{chatgpt,claude,generic,markdown}.js` |
+| `src/core/ucm.js` 464 行混模型/渲染/脱敏/指纹 | 拆成 model / text / render / redact / identity 五层，`ucm.js` 只 re-export |
 | `package.json` 硬编码两个测试文件 | 改为 `"test/**/*.test.js"` glob，新测试自动纳入 |
 | IDE 配置/工作区状态混入提交 | `.gitignore` 已覆盖 `.idea/` `.vscode/` `.workbuddy/` |
 | CRLF 行尾污染 diff | `.gitattributes` 统一 LF，`.cmd/.bat/.ps1` 保留 CRLF |
 
 > 若有人把手写清单加回来，`test/contract/discovery.test.js` 的注入用例会失败。
+> 若有人让 UCM 各层互相引用，`test/contract/layering.test.js` 会失败。
