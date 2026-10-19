@@ -1,5 +1,8 @@
-# LANE：feat/adapter-codex
+# LANE：feat/adapter-codex（已冻结）
 
+> **2026-10-19 范围收敛后，Codex 不在支持范围内。** 本分支已合入，代码保留，
+> 只修 bug，不再扩展功能、不做续聊验收。见 [../scope.md](../scope.md)。
+>
 > 本文件是该分支的范围围栏。开工前先读完，任何越界改动在评审时直接打回。
 > 契约见 `docs/contract/adapter-interface.md` 与 `docs/contract/ownership.md`（只读）。
 

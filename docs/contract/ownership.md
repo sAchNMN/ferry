@@ -43,6 +43,10 @@
 
 ## 按平台独占
 
+> **范围冻结（2026-10-19）**：只在维护范围内的适配器是 `workbuddy.js`、`deepseek-harness.js`、
+> `exports/chatgpt.js`。下表其余平台文件进入冻结态：只接 bug 修复，不接新功能。
+> 见 [../scope.md](../scope.md)。
+
 | 路径 | owner lane |
 |---|---|
 | `src/adapters/claude-code.js` + `test/adapters/claude-code/**` | `feat/adapter-claude-code` |

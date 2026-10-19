@@ -1,5 +1,10 @@
 # Ferry 多 AI、多分支并行开发方案
 
+> **范围已收敛（2026-10-19）**：只做 WorkBuddy / DeepSeek Harness / ChatGPT 三个 Agent。
+> 下文第 5 节的 8 个平台分支中，仅 `feat/adapter-chatgpt` 保留，其余 7 个作废；
+> 已合入的 Codex 冻结维护。核心六分支（契约 / 迁移 / 打包 / GUI / E2E / 发布）不受影响。
+> 范围以 [scope.md](scope.md) 为准，本文件与它冲突时以 scope.md 为准。
+
 shizichen，建议采用“统一协议先冻结、平台适配并行、集成分支持续验收”的 14 个开发职责分支方案。
 
 ## 关键点

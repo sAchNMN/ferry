@@ -50,6 +50,19 @@ Windows 也可以直接双击 `start.cmd`；macOS / Linux 用 `./start.sh`。
 
 ---
 
+## 范围（2026-10-19 收敛）
+
+当前只承诺三个 Agent 的迁移：**WorkBuddy**、**DeepSeek Harness**、**ChatGPT**（官方导出包）。
+
+这三个不对等：只有 WorkBuddy 能原生写回，另外两家是只读来源。所以实际链路是
+**「把 DeepSeek Harness 和 ChatGPT 的历史搬进 WorkBuddy」**，不是三向互迁。
+ChatGPT 的会话在服务器上，本地没有可写的库，这一路永远只能当来源。
+
+其余平台（Claude Code、Cursor、Copilot、Cline 系、Continue、Gemini CLI、Codex、Trae 等）
+代码保留但**已冻结**：只修 bug，不做续聊验收，不算支持承诺。详见 [docs/scope.md](docs/scope.md)。
+
+> 下面「支持什么」里的矩阵是代码历史能力记录，**不代表当前支持范围**。
+
 ## 支持什么
 
 ### 验证状态（先看这里）
@@ -97,6 +110,7 @@ Ferry 的每个平台支持按"证据等级"分三档，**不要按"代码里有
 
 | Agent | 说明 |
 |---|---|
+| DeepSeek Harness | `~/.dsh/sessions/**/session.jsonl[.zstd]`，读取后可转交接包或迁移到其它本地 Agent |
 | Goose（Block） | 会话为 JSONL，可导出、可转交接包 |
 | Aider | `.aider.chat.history.md`，可导出、可转交接包 |
 

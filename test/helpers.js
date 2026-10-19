@@ -207,6 +207,89 @@ export async function seedGemini(home) {
   return { projectHash, sessionId, dir };
 }
 
+export async function seedDeepSeekHarness(home, cwd = 'C:\\work\\deepseek') {
+  const sessionId = 'dsh-session-1';
+  const root = path.join(home, '.dsh', 'sessions', '--C-work-deepseek--', sessionId);
+  const file = path.join(root, 'session.jsonl');
+  await write(
+    file,
+    jsonl([
+      {
+        type: 'session',
+        version: 4,
+        id: sessionId,
+        createdAt: 1760000000000,
+        cwd,
+        isSeeded: false,
+        delegationDepth: 0,
+      },
+      { type: 'session/title', time: 1760000000001, data: { title: '修复 DeepSeek 迁移' } },
+      {
+        type: 'system/message',
+        time: 1760000000002,
+        data: {
+          turn: 0,
+          step: 0,
+          message: { role: 'system', content: [{ type: 'text', text: '你是一个编码助手。' }], id: 'sys-1' },
+        },
+      },
+      {
+        type: 'user/message',
+        time: 1760000000003,
+        data: { role: 'user', content: [{ type: 'text', text: '请检查迁移脚本。' }], id: 'user-1' },
+      },
+      {
+        type: 'request/context',
+        time: 1760000000004,
+        data: { provider: 'deepseek-official', model: 'deepseek-chat' },
+      },
+      {
+        type: 'assistant/message',
+        time: 1760000000005,
+        data: {
+          turn: 1,
+          step: 1,
+          message: {
+            role: 'assistant',
+            content: [
+              { type: 'reasoning', text: '先看迁移入口。' },
+              { type: 'tool-call', id: 'call-1', name: 'shell', arguments: '{"command":["npm","test"]}' },
+            ],
+            source: { kind: 'model', provider: 'deepseek-official', model: 'deepseek-chat' },
+            id: 'assistant-1',
+          },
+          stream: [],
+        },
+      },
+      {
+        type: 'tool/result',
+        time: 1760000000006,
+        data: {
+          turn: 1,
+          step: 1,
+          message: { role: 'tool', content: [{ type: 'text', text: 'FAIL migration.test.js' }], id: 'tool-1' },
+        },
+      },
+      {
+        type: 'assistant/message',
+        time: 1760000000007,
+        data: {
+          turn: 1,
+          step: 1,
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: '已定位迁移入口。' }],
+            source: { kind: 'model', provider: 'deepseek-official', model: 'deepseek-chat' },
+            id: 'assistant-2',
+          },
+          stream: [],
+        },
+      },
+    ]),
+  );
+  return { sessionId, file, root, cwd };
+}
+
 export async function seedTrae(home, app = 'Trae', cwd = 'C:\\work\\trae-proj') {
   const wsHash = 'abc123def456';
   const sessionId = 'c0ffee00-1111-4222-8333-444455556666';
