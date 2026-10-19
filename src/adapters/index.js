@@ -1,33 +1,12 @@
-import claudeCode from './claude-code.js';
-import codex from './codex.js';
-import vscodeCopilot from './vscode-copilot.js';
-import cursor from './cursor.js';
-import cline from './cline-family.js';
-import continueStore from './continue.js';
-import { geminiCli, qwenCode, iflowCli } from './gemini-family.js';
-import { trae, vscodeChat } from './vscode-chat.js';
-import { goose, opencode, aider } from './misc-stores.js';
-import { chatgptExport, claudeExport, genericJson, markdownImporter } from './web-exports.js';
+/**
+ * 适配器聚合出口。
+ *
+ * 这里是唯一的公共注册点，由自动发现填充 —— 不再手写 import 与数组。
+ * 新增平台请新增 `src/adapters/<name>.js`，不要改本文件（见 docs/contract/ownership.md）。
+ */
+import { discoverAdapters } from './_loader.js';
 
-/** 本机会话仓库 */
-export const stores = [
-  claudeCode,
-  codex,
-  cursor,
-  vscodeCopilot,
-  cline,
-  continueStore,
-  geminiCli,
-  qwenCode,
-  iflowCli,
-  trae,
-  vscodeChat,
-  goose,
-  opencode,
-  aider,
-];
+const { stores, importers, origin } = await discoverAdapters();
 
-/** 外部导出文件格式 */
-export const importers = [chatgptExport, claudeExport, genericJson, markdownImporter];
-
+export { stores, importers, origin };
 export default { stores, importers };
