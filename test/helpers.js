@@ -381,3 +381,99 @@ export function makeZip(files) {
   eocd.writeUInt32LE(offset, 16);
   return Buffer.concat([...locals, cd, eocd]);
 }
+
+/* ------------------------------------------------------------------ */
+/* WorkBuddy：作为迁移目标的最小机器                                  */
+/* ------------------------------------------------------------------ */
+
+/** WorkBuddy 本机已有的 user_id：迁移时必须沿用，否则应用会当成别的账号。 */
+export const WB_USER_ID = 'b5e68213-42da-48a8-9808-e2e34c26aca2';
+
+/**
+ * 造一个装过 WorkBuddy 的用户目录（只有库，没有会话）。
+ * 侧栏历史只读这个库，所以"能否导入后看见"必须走它。
+ */
+export async function seedWorkBuddyDb(home, rows = []) {
+  const { openDb, insertLoose, closeQuietly } = await import('../src/core/sqlite.js');
+  const file = path.join(home, '.workbuddy', 'workbuddy.db');
+  await fsp.mkdir(path.dirname(file), { recursive: true });
+  const db = await openDb(file, { readOnly: false });
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS sessions (
+      id TEXT PRIMARY KEY, cwd TEXT NOT NULL, user_id TEXT NOT NULL, title TEXT, custom_title TEXT,
+      status TEXT NOT NULL DEFAULT 'Pending', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+      last_activity_at INTEGER, deleted_at INTEGER, is_playground INTEGER NOT NULL DEFAULT 0,
+      is_background_automation INTEGER, mode TEXT, model TEXT, expert_id TEXT, project_id TEXT)`);
+    db.exec(`CREATE TABLE IF NOT EXISTS workspaces (path TEXT PRIMARY KEY, last_opened_at INTEGER NOT NULL)`);
+    insertLoose(db, 'sessions', {
+      id: 'existing-session',
+      cwd: 'C://work//old',
+      user_id: WB_USER_ID,
+      title: '旧会话',
+      status: 'completed',
+      created_at: 1792000000000,
+      updated_at: 1792000000000,
+      is_playground: 0,
+      mode: 'craft',
+      model: 'deepseek-v4.1-flash',
+    });
+    for (const row of rows) insertLoose(db, 'sessions', row);
+  } finally {
+    closeQuietly(db);
+  }
+  // 真实机器上"库里有行"必然"目录里有 jsonl"，缺一个扫描就看不到，夹具不能偷懒
+  const { projectSlug } = await import('../src/adapters/workbuddy.js');
+  await write(
+    path.join(home, '.workbuddy', 'projects', projectSlug('C:\\work\\old'), 'existing-session.jsonl'),
+    jsonl([
+      { type: 'session-meta', id: 'meta-old', sessionId: 'existing-session', timestamp: 1792000000000, meta: {} },
+      {
+        id: 'm-old-1',
+        parentId: null,
+        timestamp: 1792000001000,
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: '<user_query>旧会话的问题</user_query>' }],
+        cwd: 'C:\\work\\old',
+        sessionId: 'existing-session',
+      },
+    ]),
+  );
+  return file;
+}
+
+/** 造一条 WorkBuddy 会话（源机器用）。user 消息带真实形态的注入壳。 */
+export async function seedWorkBuddySession(home, cwd = 'C://work//wb-demo') {
+  const { projectSlug } = await import('../src/adapters/workbuddy.js');
+  const sessionId = 'a4f7a33a-e647-468f-b88b-673ef55e91ec';
+  const file = path.join(home, '.workbuddy', 'projects', projectSlug(cwd), `${sessionId}.jsonl`);
+  const reminder = `<system-reminder data-role="user-context">\n<user_info>\nOS Version: win32\nWorkspace Folder: ${cwd}\n</user_info>\n</system-reminder>`;
+  await write(
+    file,
+    jsonl([
+      { type: 'session-meta', id: 'meta-1', sessionId, timestamp: 1792395000000, meta: { 'codebuddy.ai/hostKind': 'unopted' } },
+      {
+        id: 'm-user-1',
+        parentId: null,
+        timestamp: 1792395001000,
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: `${reminder}\n<user_query>帮我修复登录页的报错</user_query>` }],
+        cwd,
+        sessionId,
+      },
+      {
+        id: 'm-assist-1',
+        parentId: 'm-user-1',
+        timestamp: 1792395002000,
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: '先看登录页的实现，再加频率限制。' }],
+        cwd,
+        sessionId,
+        providerData: { agent: 'cli', model: 'deepseek-v4.1-flash', conversationRequestId: 'req-1' },
+      },
+    ]),
+  );
+  return { sessionId, file, cwd };
+}

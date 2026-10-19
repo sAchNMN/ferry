@@ -11,6 +11,13 @@ import path from 'node:path';
 import { ensureDir, exists, formatBytes, nowIso, readJson, sha256, shortHash, writeJson } from './util.js';
 import { backupsDir } from './env.js';
 
+/** 只对 SQLite 数据库文件派生 WAL / SHM 边车，避免给普通文本文件凭空造条目。 */
+const SQLITE_EXT = new Set(['.db', '.sqlite', '.sqlite3']);
+
+function sidecarsOf(file) {
+  return SQLITE_EXT.has(path.extname(file).toLowerCase()) ? [`${file}-wal`, `${file}-shm`] : [];
+}
+
 export async function createBackup(env, { target, writes, note }) {
   const id = `${nowIso().replace(/[-:T]/g, '').slice(0, 14)}-${shortHash(String(Date.now()), 6)}`;
   const dir = path.join(backupsDir(env), id);
@@ -18,30 +25,38 @@ export async function createBackup(env, { target, writes, note }) {
   await ensureDir(filesDir);
 
   const entries = [];
+  const seen = new Set();
   let i = 0;
+
+  const capture = async (candidate, kind) => {
+    // 调用方可能把边车也单独列进 writes（WorkBuddy 就是这么声明的），
+    // 这里去重，避免同一个文件被备份两三份、回滚时重复拷贝。
+    if (seen.has(candidate)) return;
+    seen.add(candidate);
+    const st = await fsp.stat(candidate).catch(() => null);
+    if (st && !st.isFile()) return; // 目录之类不归备份器管，别在清单里留一条假的删除项
+    if (!st) {
+      // 不存在的路径也要记一条：回滚时按"删除"处理。
+      // 这条对边车尤其重要 —— 导入前没有 WAL、导入后应用自己造了一个，
+      // 只恢复旧主库却留下新 WAL，SQLite 打开时会把迁移数据再应用一遍。
+      entries.push({ path: candidate, existed: false, backup: null, bytes: 0, kind });
+      return;
+    }
+    const name = `${String(i++).padStart(3, '0')}-${path.basename(candidate).slice(0, 60)}`;
+    const backup = path.join('files', name);
+    await fsp.copyFile(candidate, path.join(dir, backup));
+    entries.push({ path: candidate, existed: true, backup, bytes: st.size, kind });
+  };
+
   for (const w of writes) {
     const file = w.path;
     if (!file) continue;
-    // SQLite 的 WAL/SHM 也要一起备份，否则回滚可能丢掉最近写入
-    for (const candidate of [file, `${file}-wal`, `${file}-shm`]) {
-      const existed = await exists(candidate);
-      if (!existed) {
-        if (candidate === file) entries.push({ path: file, existed: false, backup: null, bytes: 0, kind: w.kind || 'file' });
-        continue;
-      }
-      const st = await fsp.stat(candidate).catch(() => null);
-      if (!st?.isFile()) continue;
-      const name = `${String(i++).padStart(3, '0')}-${path.basename(candidate).slice(0, 60)}`;
-      const backup = path.join('files', name);
-      await fsp.copyFile(candidate, path.join(dir, backup));
-      entries.push({
-        path: candidate,
-        existed: true,
-        backup,
-        bytes: st.size,
-        kind: candidate === file ? w.kind || 'file' : 'sqlite-sidecar',
-      });
-    }
+    const kind = w.kind || 'file';
+    const mainSt = await fsp.stat(file).catch(() => null);
+    await capture(file, kind);
+    // 主文件本来就不存在时不会凭空长出边车，不用记
+    if (!mainSt?.isFile()) continue;
+    for (const sidecar of sidecarsOf(file)) await capture(sidecar, 'sqlite-sidecar');
   }
 
   const manifest = {

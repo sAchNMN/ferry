@@ -543,12 +543,19 @@ async function cmdRollback({ env, rest, log }) {
   const res = await rollback(env, id);
   const restored = res.results.filter((r) => r.action === 'restored').length;
   const removed = res.results.filter((r) => r.action === 'removed').length;
-  log.success(`已回滚 ${res.manifest.id}：恢复 ${restored} 个文件，删除 ${removed} 个新建文件`);
   const failed = res.results.filter((r) => r.action === 'failed');
-  if (failed.length) {
-    log.warn(`${failed.length} 个文件回滚失败`);
-    for (const f of failed.slice(0, 5)) output.write(`  · ${f.path}：${f.error}\n`);
+
+  if (!failed.length) {
+    log.success(`已回滚 ${res.manifest.id}：恢复 ${restored} 个文件，删除 ${removed} 个新建文件`);
+    return;
   }
+
+  // 有失败时不能先打一行绿色成功：用户会以为已经回滚干净，实际停在半路。
+  log.error(`回滚未完成 ${res.manifest.id}：${failed.length} 个文件失败（已恢复 ${restored} 个，删除 ${removed} 个）`);
+  for (const f of failed.slice(0, 5)) output.write(`  · ${f.path}：${f.error}\n`);
+  if (failed.length > 5) output.write(`  · 其余 ${failed.length - 5} 个略\n`);
+  output.write(`\n  ${color.gray('常见原因：目标应用还在运行，文件被占用。完全退出应用后重试。')}\n\n`);
+  process.exitCode = 1;
 }
 
 /* ------------------------------------------------------------------ */
