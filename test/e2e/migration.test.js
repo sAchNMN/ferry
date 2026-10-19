@@ -171,7 +171,7 @@ test('端到端：导出脱敏后，归档里不得残留明文密钥', async ()
   assert.ok(conversation.meta, '脱敏信息应记录在会话 meta 里');
 });
 
-test('端到端：同一归档重复导入必须幂等', { todo: '待 feat/migration-engine 实现：当前 import 每次生成新 sessionId，会重复' }, async () => {
+test('端到端：同一归档重复导入必须幂等', async () => {
   const { file } = await exportFromMachineA();
   const B = await mintMachine('B');
   const pack = await readPack(file, { password: 'pw-123456' });
