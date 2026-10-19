@@ -80,28 +80,21 @@ test('写回 Codex：工具调用写成 function_call / function_call_output 成
   for (const id of calls) assert.ok(outs.has(id), `工具调用 ${id} 没有对应的输出，Codex 会认为这轮没结束`);
 });
 
-test(
-  '写回 Codex：session_meta 字段需与真实 rollout 对齐',
-  {
-    todo:
-      '待 adapter-codex：真实文件的 session_meta 含 session_id / base_instructions / context_window / ' +
-      'runtime_workspace_roots / thread_source，当前只写了 id/timestamp/cwd/originator/cli_version/model_provider/source',
-  },
-  async () => {
-    const { records } = await writeCodexRollout();
-    const meta = records[0].payload;
-    for (const key of ['session_id', 'base_instructions', 'context_window', 'runtime_workspace_roots', 'thread_source']) {
-      assert.ok(key in meta, `session_meta 缺字段：${key}`);
-    }
-  },
-);
+test('写回 Codex：session_meta 字段需与真实 rollout 对齐', async () => {
+  const { records } = await writeCodexRollout();
+  const meta = records[0].payload;
+  for (const key of ['session_id', 'base_instructions', 'context_window', 'runtime_workspace_roots', 'thread_source']) {
+    assert.ok(key in meta, `session_meta 缺字段：${key}`);
+  }
+});
 
-test(
-  '写回 Codex：response_item 需带真实文件里的 id / status 字段',
-  { todo: '待 adapter-codex：真实文件的 response_item 带 id/status/summary，当前未写' },
-  async () => {
-    const { records } = await writeCodexRollout();
-    const item = records.find((r) => r.type === 'response_item' && r.payload?.type === 'message');
-    for (const key of ['id', 'status']) assert.ok(key in item.payload, `response_item 缺字段：${key}`);
-  },
-);
+test('写回 Codex：response_item 需带 id 与会话元数据（status/summary 属 reasoning 条目，不在此列）', async () => {
+  const { records } = await writeCodexRollout();
+  for (const r of records.filter((x) => x.type === 'response_item')) {
+    assert.ok(r.payload.id, `${r.payload.type} 缺 id`);
+  }
+  const msg = records.find((r) => r.type === 'response_item' && r.payload?.type === 'message');
+  assert.ok(msg.payload.internal_chat_message_metadata_passthrough, '缺 internal_chat_message_metadata_passthrough');
+  // 说明：真实文件的 status / summary / encrypted_content 属于 reasoning 类条目，
+  // 我们目前不产出这类条目（thinking 块没写进去）。那是内容缺口，不是字段缺口。
+});

@@ -184,10 +184,8 @@ test('端到端：同一归档重复导入必须幂等', async () => {
   assert.equal(scan.length, 1, '同一会话导入两次不应产生副本');
 });
 
-test('端到端：源端已有的会话标题必须保留，不能被截断的首条消息覆盖',
-  { todo: '待 adapter 分支修复：codex 的 scan 已拿到 session_index 的 thread_name，但 read 用 deriveTitle 覆盖掉了' },
-  async () => {
-    const { A, source } = await exportFromMachineA();
-    assert.ok(A.home);
-    assert.equal(source.title, TITLE, '导出时应沿用源端标题，而不是首条用户消息的截断');
-  });
+test('端到端：源端已有的会话标题必须保留，不能被截断的首条消息覆盖', async () => {
+  const { A, source } = await exportFromMachineA();
+  assert.ok(A.home);
+  assert.equal(source.title, TITLE, '导出时应沿用源端标题，而不是首条用户消息的截断');
+});
