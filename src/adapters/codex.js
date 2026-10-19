@@ -184,28 +184,51 @@ export default defineStore({
 
     const lines = [];
     const iso = now.toISOString();
-    lines.push(
-      JSON.stringify({
-        timestamp: iso,
-        type: 'session_meta',
-        payload: {
-          id: sessionId,
-          timestamp: iso,
-          cwd,
-          originator: 'ferry',
-          cli_version: '0.0.0',
-          model_provider: 'openai',
-          source: 'cli',
-        },
-      }),
-    );
-    lines.push(
-      JSON.stringify({
-        timestamp: iso,
-        type: 'turn_context',
-        payload: { turn_id: uid(), cwd, model: conv.model?.id || 'gpt-5', approval_policy: 'on-request' },
-      }),
-    );
+    let ordinal = 0;
+
+    /**
+     * 写一行 rollout 记录。
+     *
+     * 字段对齐的是**真实 Codex rollout 文件**的结构（用 112 个真实文件统计出来的），
+     * 不是我们自己的扫描器能读就算数 —— 那属于循环论证。
+     *
+     * 原则：补齐**身份/结构**字段（不加就解析不了），
+     *       不伪造**策略/行为**字段（sandbox_policy、permission_profile 等，
+     *       写错会改变用户恢复会话时的安全姿态）。
+     */
+    const push = (type, payload, ts = iso) =>
+      lines.push(JSON.stringify({ timestamp: ts, ordinal: ordinal++, type, payload }));
+
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const turnId = uid('turn_');
+
+    push('session_meta', {
+      session_id: sessionId,
+      id: sessionId,
+      timestamp: iso,
+      cwd,
+      runtime_workspace_roots: [cwd],
+      originator: 'codex_cli',
+      cli_version: '0.0.0',
+      source: 'cli',
+      thread_source: 'user',
+      model_provider: 'openai',
+      history_mode: 'paginated',
+      // 真实文件里是完整系统提示。这里不伪造内容，留空并标明来源。
+      base_instructions: { text: '', provenance: 'ferry-import' },
+      context_window: { window_id: sessionId },
+    });
+
+    push('turn_context', {
+      turn_id: turnId,
+      root_turn_id: turnId,
+      cwd,
+      workspace_roots: [cwd],
+      current_date: today,
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+      model: conv.model?.id || 'gpt-5',
+      approval_policy: 'on-request',
+    });
 
     let firstUser = '';
     for (const m of conv.messages) {
@@ -215,41 +238,45 @@ export default defineStore({
         const texts = m.blocks.filter((b) => b.type === 'text').map((b) => b.text).filter(Boolean);
         const calls = m.blocks.filter((b) => b.type === 'tool_call');
         if (texts.length) {
-          lines.push(
-            JSON.stringify({
-              timestamp: ts,
-              type: 'response_item',
-              payload: {
-                type: 'message',
-                role: m.role,
-                content: texts.map((t) => ({ type: m.role === 'assistant' ? 'output_text' : 'input_text', text: t })),
-              },
-            }),
+          push(
+            'response_item',
+            {
+              type: 'message',
+              id: uid('msg_'),
+              role: m.role,
+              content: texts.map((t) => ({ type: m.role === 'assistant' ? 'output_text' : 'input_text', text: t })),
+              internal_chat_message_metadata_passthrough: { turn_id: turnId, create_time: ts },
+            },
+            ts,
           );
           if (m.role === 'user' && !firstUser) firstUser = firstLine(texts[0], 100);
         }
         for (const c of calls) {
-          lines.push(
-            JSON.stringify({
-              timestamp: ts,
-              type: 'response_item',
-              payload: {
-                type: 'function_call',
-                name: c.name,
-                arguments: JSON.stringify(c.input ?? {}),
-                call_id: c.id || uid('call_'),
-              },
-            }),
+          push(
+            'response_item',
+            {
+              type: 'function_call',
+              id: uid('fc_'),
+              name: c.name,
+              arguments: JSON.stringify(c.input ?? {}),
+              call_id: c.id || uid('call_'),
+              internal_chat_message_metadata_passthrough: { turn_id: turnId },
+            },
+            ts,
           );
         }
       } else if (m.role === 'tool') {
         for (const r of m.blocks.filter((b) => b.type === 'tool_result')) {
-          lines.push(
-            JSON.stringify({
-              timestamp: ts,
-              type: 'response_item',
-              payload: { type: 'function_call_output', call_id: r.callId || '', output: r.output || '' },
-            }),
+          push(
+            'response_item',
+            {
+              type: 'function_call_output',
+              id: uid('fco_'),
+              call_id: r.callId || '',
+              output: r.output || '',
+              internal_chat_message_metadata_passthrough: { turn_id: turnId },
+            },
+            ts,
           );
         }
       }
@@ -258,10 +285,16 @@ export default defineStore({
     const data = lines.join('\n') + '\n';
     const notes = [];
     let dbRow = null;
+    const indexPath = path.join(base, 'session_index.jsonl');
+    const indexLine = JSON.stringify({ id: sessionId, thread_name: conv.title, updated_at: now.toISOString() }) + '\n';
 
     if (opts.dryRun) {
       return {
-        writes: [{ path: file, bytes: Buffer.byteLength(data), kind: 'codex-rollout', preview: true }],
+        // 干跑必须报出与真实执行**完全相同**的文件清单，否则用户按预览判断风险就是错的
+        writes: [
+          { path: file, bytes: Buffer.byteLength(data), kind: 'codex-rollout', preview: true },
+          { path: indexPath, bytes: Buffer.byteLength(indexLine), kind: 'codex-index', preview: true },
+        ],
         notes: ['模拟模式：未写入'],
         resume: { cwd, command: `codex resume ${sessionId}`, sessionId },
       };
@@ -271,12 +304,11 @@ export default defineStore({
     await fsp.writeFile(file, data, 'utf8');
 
     // 1) session_index.jsonl
+    let indexRecord = null;
     try {
-      await fsp.appendFile(
-        path.join(base, 'session_index.jsonl'),
-        JSON.stringify({ id: sessionId, thread_name: conv.title, updated_at: now.toISOString() }) + '\n',
-        'utf8',
-      );
+      await fsp.appendFile(indexPath, indexLine, 'utf8');
+      // 必须记进 writes：否则 dry-run 预览会少报一个文件，用户以为只写 1 个、实际写了 2 个
+      indexRecord = writeRecord(indexPath, indexLine, 'codex-index');
     } catch (err) {
       notes.push(`会话索引更新失败（不影响 resume）：${err.message}`);
     }
@@ -300,6 +332,7 @@ export default defineStore({
     return {
       writes: [
         writeRecord(file, data, 'codex-rollout'),
+        ...(indexRecord ? [indexRecord] : []),
         ...(dbRow ? [writeRecord(dbRow.dbFile, '', 'codex-index')] : []),
       ],
       notes,
