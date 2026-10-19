@@ -148,14 +148,16 @@ blobs.size / blobs.bytes()
 别名是全局命名空间，集中在 `src/core/aliases.js`（纯数据文件）。
 **平台分支不得修改该文件**，需要新增别名时在 PR 描述里提出，由集成负责人统一提交。
 
-## 7. ImportPlan（v1 目标形态，当前未实现）
+## 7. ImportPlan（v1，计划生成已落地）
 
-现状：`migrate.js` 直接调 `store.import(env, conv, { dryRun })`，计划与执行在同一次遍历里完成。
-要达到"零写盘预演 → 用户确认 → 重检 → 应用"的流程，需把 `import` 拆成两段：
+核心已提供 `planImport(env, conv, opts)` 与 `planImports(env, conversations, opts)`：
+适配器实现 `planImport` 时优先调用；旧适配器则通过 `store.import(..., { dryRun: true })`
+推导写入清单，并标注 `fidelity: 'inferred'`。计划生成阶段不会创建目录、备份或写入目标文件。
+当前仍需各适配器逐步提供稳定的两阶段应用实现，才能完成"零写盘预演 → 用户确认 → 重检 → 应用"闭环：
 
 ```js
 planImport(env, conv, opts): Promise<ImportPlan>   // 零写盘
-applyImportPlan(env, plan, opts): Promise<ImportResult>
+applyImportPlan(env, plan, opts): Promise<ImportResult> // 目标应用接口
 ```
 
 ```js
@@ -173,10 +175,11 @@ ImportPlan = {
 
 迁移策略（避免核心与适配器互相等待）：
 
-1. 契约层只定义 `ImportPlan` 结构，不实现；
-2. 核心提供默认包装器：适配器未实现 `planImport` 时，用现有 `import()` 的 `dryRun` 反推计划，
+1. 契约层定义 `ImportPlan` 结构，核心提供零写盘默认包装器；
+2. 适配器未实现 `planImport` 时，用现有 `import()` 的 `dryRun` 反推计划，
    并标注 `fidelity: 'inferred'`；
-3. 各适配器在自己的分支里逐步替换为真实两段式，替换前链路可用、只是计划精度低。
+3. `fidelity: 'inferred'` 计划只用于预览，不作为独立应用凭据；
+4. 各适配器在自己的分支里逐步替换为真实两段式，替换前链路可用、只是计划精度低。
 
 ## 8. 契约测试入口
 

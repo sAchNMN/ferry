@@ -10,7 +10,7 @@ import { createBlobStore } from './archive.js';
 import { createConversation, conversationStats, conversationFingerprint, redactConversation, validateConversation } from './ucm.js';
 import { createBackup } from './backup.js';
 import { lookupImport, readLedger, recordImports } from './ledger.js';
-import { existsSync, nowIso, pathKey, readJson, writeJson } from './util.js';
+import { existsSync, nowIso, pathKey, readJson, sha256, sha256File, stableStringify, writeJson } from './util.js';
 
 /* ------------------------------------------------------------------ */
 /* 路径映射                                                            */
@@ -268,6 +268,192 @@ export function importScope(adapterId, env, convs = []) {
   return scopeFromStore(getStore(adapterId), env);
 }
 
+/* ------------------------------------------------------------------ */
+/* ImportPlan v1                                                      */
+/* ------------------------------------------------------------------ */
+
+const PLAN_RESULT = Symbol('ferry.importPlanResult');
+
+function uniquePaths(paths = []) {
+  const out = [];
+  const seen = new Set();
+  for (const value of paths) {
+    if (!value) continue;
+    const p = String(value);
+    const key = p.replace(/\\/g, '/').toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(p);
+  }
+  return out;
+}
+
+async function snapshotDigest(paths = []) {
+  const snapshot = [];
+  for (const file of uniquePaths(paths)) {
+    try {
+      const stat = await fsp.stat(file);
+      const entry = {
+        path: file,
+        exists: true,
+        kind: stat.isFile() ? 'file' : stat.isDirectory() ? 'directory' : 'other',
+        bytes: stat.isFile() ? stat.size : 0,
+        mtimeMs: stat.mtimeMs,
+      };
+      if (stat.isFile()) {
+        entry.sha256 = await sha256File(file).catch(() => null);
+      }
+      snapshot.push(entry);
+    } catch {
+      snapshot.push({ path: file, exists: false });
+    }
+  }
+  return sha256(stableStringify(snapshot));
+}
+
+async function normalizePlanWrites(rawWrites = []) {
+  const writes = [];
+  for (const raw of Array.isArray(rawWrites) ? rawWrites : []) {
+    if (!raw?.path) continue;
+    const file = String(raw.path);
+    let existed = raw.existed;
+    if (typeof existed !== 'boolean') {
+      existed = false;
+      try {
+        existed = (await fsp.stat(file)).isFile();
+      } catch {
+        /* 新文件 */
+      }
+    }
+    const item = {
+      path: file,
+      kind: raw.kind || 'file',
+      existed,
+      bytes: Number.isFinite(raw.bytes) ? raw.bytes : 0,
+    };
+    if (raw.sha256) item.sha256 = raw.sha256;
+    writes.push(item);
+  }
+  return writes;
+}
+
+function inferLosses(store, conv, declared = []) {
+  const losses = Array.isArray(declared) ? [...declared] : [];
+  const blocks = (conv.messages || []).flatMap((m) => (Array.isArray(m.blocks) ? m.blocks : []));
+  if (!store.capabilities?.tools && blocks.some((b) => b.type === 'tool_call' || b.type === 'tool_result')) {
+    losses.push({ kind: 'tools', detail: `${store.name} 不支持工具调用原生导入，将降级为文本或丢弃。` });
+  }
+  if (!store.capabilities?.attachments && blocks.some((b) => b.type === 'image' || b.type === 'file')) {
+    losses.push({ kind: 'attachments', detail: `${store.name} 不支持附件原生导入，附件将降级或跳过。` });
+  }
+  return losses;
+}
+
+function resumeText(store, conv, result, opts) {
+  const resume = result?.resume;
+  if (typeof resume === 'string') return resume;
+  if (resume?.command) return resume.command;
+  if (typeof store.resumeHint === 'function') return store.resumeHint(conv, opts) || '';
+  return '';
+}
+
+/**
+ * 生成单个会话的 ImportPlan。
+ *
+ * 适配器实现 `planImport` 时优先调用；旧适配器则通过 `import(..., { dryRun: true })`
+ * 推导计划并标记 fidelity=inferred。整个函数不会创建目录、备份或写入目标文件。
+ */
+export async function planImport(env, conv, opts = {}) {
+  const store = opts.store || getStore(opts.target);
+  if (!store) throw new Error(`未知的目标：${opts.target}`);
+  if (!store.capabilities?.import) {
+    throw new Error(`${store.name} 暂不支持原生导入，可改用交接包（--to handoff）`);
+  }
+
+  const normalizedMap = normalizeMap(opts.map);
+  const normalizedOpts = { ...opts, map: normalizedMap };
+  const ws = resolveWorkspace(conv, normalizedOpts, env);
+  const runOpts = {
+    ...normalizedOpts,
+    workspace: ws.cwd,
+    dryRun: true,
+    backup: false,
+  };
+  let result;
+  let fidelity = 'inferred';
+  if (typeof store.planImport === 'function') {
+    result = (await store.planImport(env, conv, runOpts)) || {};
+    fidelity = result.fidelity || 'declared';
+  } else {
+    result = (await store.import(env, conv, runOpts)) || {};
+  }
+
+  const writes = await normalizePlanWrites(result.writes);
+  const backupScope = uniquePaths([
+    ...(result.backupScope || scopeFromStore(store, env)),
+    ...writes.filter((w) => w.existed).map((w) => w.path),
+  ]);
+  const locks = uniquePaths([...(result.locks || []), ...backupScope, ...writes.map((w) => w.path)]);
+  const statePaths = uniquePaths([...backupScope, ...writes.map((w) => w.path)]);
+  const stateDigest = await snapshotDigest(statePaths);
+  const resumeInfo = result.resume;
+  const idMap = { ...(result.idMap || {}) };
+  const sourceId = conv.id || conv.source?.sessionId;
+  const targetId = resumeInfo?.sessionId || resumeInfo?.id;
+  if (sourceId && targetId && !idMap[sourceId]) idMap[sourceId] = String(targetId);
+
+  const plan = {
+    version: 1,
+    fidelity,
+    target: {
+      id: store.id,
+      version: String(store.version || store.schemaVersion || store.capabilities?.version || 'unknown'),
+      ...(result.target && typeof result.target === 'object' ? result.target : {}),
+    },
+    writes,
+    backupScope,
+    locks,
+    idMap,
+    losses: inferLosses(store, conv, result.losses),
+    resume: resumeText(store, conv, result, runOpts),
+    stateDigest,
+    notes: Array.isArray(result.notes) ? result.notes : [],
+    workspace: ws.cwd,
+  };
+
+  Object.defineProperty(plan, PLAN_RESULT, { value: result });
+  return plan;
+}
+
+/** 批量生成计划；返回聚合信息，单个计划仍位于 `plans`。 */
+export async function planImports(env, conversations, opts = {}) {
+  const filtered = (Array.isArray(conversations) ? conversations : []).filter((c) => c?.messages?.length);
+  const plans = [];
+  const errors = [];
+  for (const conv of filtered) {
+    try {
+      plans.push(await planImport(env, conv, opts));
+    } catch (err) {
+      errors.push({ title: conv.title, error: err.message });
+    }
+  }
+  const writes = plans.flatMap((p) => p.writes);
+  const backupScope = uniquePaths(plans.flatMap((p) => p.backupScope));
+  const locks = uniquePaths(plans.flatMap((p) => p.locks));
+  return {
+    version: 1,
+    target: plans[0]?.target || { id: opts.target, version: 'unknown' },
+    fidelity: plans.length && plans.every((p) => p.fidelity === 'declared') ? 'declared' : 'inferred',
+    plans,
+    writes,
+    backupScope,
+    locks,
+    losses: plans.flatMap((p) => p.losses),
+    errors,
+    stateDigest: await snapshotDigest(uniquePaths([...backupScope, ...writes.map((w) => w.path)])),
+  };
+}
+
 /**
  * @param {object} env
  * @param {object[]} conversations
@@ -335,6 +521,23 @@ export async function importConversations(env, conversations, opts = {}) {
     }
     if (ws.original && ws.reason === 'map') notes.push(`路径已映射：${ws.original} → ${ws.cwd}`);
     try {
+      if (opts.dryRun) {
+        const plan = await planImport(env, conv, importOpts);
+        const raw = plan[PLAN_RESULT] || {};
+        results.push({
+          title: conv.title,
+          source: conv.source.name,
+          workspace: ws.cwd,
+          writes: plan.writes,
+          notes: [...notes, ...plan.notes],
+          resume: raw.resume,
+          skipped: false,
+          error: null,
+        });
+        onProgress?.({ done: i, total: filtered.length, title: conv.title });
+        continue;
+      }
+
       const res = await store.import(
         env,
         conv,
