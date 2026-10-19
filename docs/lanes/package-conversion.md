@@ -24,6 +24,18 @@
 6. **渲染与脱敏**：`ucm-render.js` / `ucm-redact.js` / `ucm-text.js` 的归属在你这边，
    但**接口不得变更**（`renderMarkdown` / `renderHandoff` / `redactConversation` 的签名与返回结构）。
 
+### 进度
+
+| 目标 | 状态 | 说明 |
+|---|---|---|
+| 资源限制（防炸弹） | ✅ 完成 | `src/core/limits.js`：gzip 体积上限、条目数、单条/总量预算 |
+| 路径安全 | ✅ 完成 | 拒绝 `../`、绝对路径、盘符、反斜杠、NUL；附件名必须是 64 位 hex sha256 |
+| 损坏检测 | ✅ 已有 | `sha256` 不匹配显式失败（`ECHECKSUM`），`--no-verify` 跳过 |
+| 流式加解密 | ⏳ 待做 | 现在整包读入内存，大归档会 OOM |
+| 增量包 ferrypack/2 | ⏳ 待做 | 需先提 RFC |
+| 分卷 | ⏳ 待做 | |
+| 压缩比上限 | ⏳ 待做 | 目前靠总量上限兜底，未单独限制 ratio |
+
 ## 允许修改
 
 ```

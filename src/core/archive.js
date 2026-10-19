@@ -28,6 +28,7 @@ import {
   shortHash,
   safeName,
 } from './util.js';
+import { assertSafeEntryName, assertSafeHash, createBudget, formatLimit, mergeLimits } from './limits.js';
 
 export const PACK_FORMAT = 'ferrypack/1';
 export const PACK_EXT = '.ferrypack';
@@ -207,9 +208,29 @@ export async function readPack(file, opts = {}) {
   return readPackBuffer(raw, { ...opts, name: path.basename(file) });
 }
 
+/**
+ * 带体积上限的 gunzip。
+ *
+ * 这是防压缩炸弹的第一道闸：gzip 的压缩比可以到 1000:1 以上，
+ * 一个几十 KB 的文件解出来能塞满内存。`maxOutputLength` 让 zlib 在超限时直接抛错，
+ * 不会先把几十 GB 分配出来再判断。
+ */
+function gunzipBounded(buf, limits) {
+  try {
+    return zlib.gunzipSync(buf, { maxOutputLength: limits.maxTotalBytes });
+  } catch (err) {
+    throw new FerryError(`归档解压失败或体积超出上限：${err.message}`, {
+      code: 'ETOOLARGE',
+      hint: `单次解压上限 ${formatLimit(limits.maxTotalBytes)}；确认归档可信后可调高 limits.maxTotalBytes。`,
+      cause: err,
+    });
+  }
+}
+
 /** 从内存解析归档（Web UI 上传 / 测试都用它）。 */
 export function readPackBuffer(raw, opts = {}) {
   const { password, verify = true } = opts;
+  const limits = mergeLimits(opts.limits);
   let tarBuf;
   const warnings = [];
 
@@ -218,9 +239,9 @@ export function readPackBuffer(raw, opts = {}) {
       throw new FerryError('该归档已加密，需要密码', { code: 'ENOPASS' });
     }
     const gz = decryptBuffer(raw, password);
-    tarBuf = zlib.gunzipSync(gz);
+    tarBuf = gunzipBounded(gz, limits);
   } else if (raw.length > 2 && raw[0] === 0x1f && raw[1] === 0x8b) {
-    tarBuf = zlib.gunzipSync(raw);
+    tarBuf = gunzipBounded(raw, limits);
   } else if (raw.length > 262 && raw.toString('ascii', 257, 262) === 'ustar') {
     tarBuf = raw;
   } else {
@@ -231,6 +252,11 @@ export function readPackBuffer(raw, opts = {}) {
   }
 
   const entries = parseTar(tarBuf);
+  const budget = createBudget(limits);
+  for (const e of entries) {
+    assertSafeEntryName(e.name);
+    budget.add(e.data.length, e.name);
+  }
   const byName = new Map(entries.map((e) => [e.name, e]));
   const manifestEntry = byName.get('manifest.json');
   if (!manifestEntry) throw new FerryError('归档缺少 manifest.json', { code: 'EBADPACK' });
@@ -248,6 +274,7 @@ export function readPackBuffer(raw, opts = {}) {
 
   const blobs = new Map();
   for (const b of manifest.blobs || []) {
+    assertSafeHash(b.sha256);
     const e = byName.get(b.file);
     if (!e) {
       warnings.push(`附件缺失：${b.name || b.sha256}`);
@@ -308,6 +335,7 @@ export async function unpackTo(file, dir, opts = {}) {
     );
   }
   for (const [hash, b] of pack.blobs) {
+    assertSafeHash(hash);
     await fsp.writeFile(path.join(dir, 'blobs', hash), b.data);
   }
   const { manifest, ...rest } = pack;
