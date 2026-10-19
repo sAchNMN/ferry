@@ -88,6 +88,7 @@ Ferry 的每个平台支持按"证据等级"分三档，**不要按"代码里有
 | 平台 | 导出 | 导入 | 真实应用点开续聊 |
 |---|---|---|---|
 | **WorkBuddy**（腾讯） | ✅ 63 个真实会话 / 17k 条消息 | ✅ 写回字段与真实文件逐项对齐 | ✅ **2026-10-19 实测通过**：真实会话导入后侧栏可见、点开内容完整、发消息拿到回复，且应用继续往迁移文件里追加事件 |
+| **DeepSeek Harness** | ✅ 31 个真实会话 / 4,681 条消息 / 2.64M 字符，0 错误 | ❌ 不写回 | — |
 | **Codex**（OpenAI） | ✅ 113 个真实会话 | ✅ 写回结构与真实 rollout 逐字段对齐 | ⏳ 待作者验证 |
 | **GitHub Copilot Chat** | ✅ 26 个真实会话 | 🧪 | ⏳ |
 | Claude Code / Cursor / Cline / Continue / Trae / Gemini CLI / Qwen / iFlow / OpenCode 等 | 🧪 | 🧪 | ⏳ |
@@ -118,7 +119,7 @@ Ferry 的每个平台支持按"证据等级"分三档，**不要按"代码里有
 
 | Agent | 说明 |
 |---|---|
-| DeepSeek Harness | `~/.dsh/sessions/**/session.jsonl[.zstd]`，读取后可转交接包或迁移到其它本地 Agent |
+| DeepSeek Harness | `~/.dsh/sessions/<slug>/<sessionId>/session.v4.jsonl.zstd`（带版本号，未压缩的 `session*.jsonl` 也认），读取后可转交接包或迁移到其它本地 Agent |
 | Goose（Block） | 会话为 JSONL，可导出、可转交接包 |
 | Aider | `.aider.chat.history.md`，可导出、可转交接包 |
 

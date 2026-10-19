@@ -75,3 +75,45 @@ test('DeepSeek Harness：读取拼接的 zstd JSONL frames', async () => {
   assert.equal(conv.messages.length, 5);
   assert.ok(conv.messages.some((m) => JSON.stringify(m).includes('FAIL migration.test.js')));
 });
+
+/**
+ * 2026-10-19 真机发现：本机 Harness 写的是 `session.v4.jsonl.zstd`（带格式版本号），
+ * 适配器早期只认 `session.jsonl` / `session.jsonl.zstd`，扫描结果直接是 0。
+ * 这条用例锁死"带版本号的压缩会话文件名"。
+ */
+test('DeepSeek Harness：识别带版本号的 session.v4.jsonl.zstd', async () => {
+  const home = await freshDir('deepseek-harness-v4');
+  const seeded = await seedDeepSeekHarness(home);
+  const raw = await fsp.readFile(seeded.file, 'utf8');
+  const compressed = Buffer.concat(
+    raw
+      .trimEnd()
+      .split(/\r?\n/)
+      .map((line) => zstdCompressSync(Buffer.from(`${line}\n`))),
+  );
+  const versioned = path.join(path.dirname(seeded.file), 'session.v4.jsonl.zstd');
+  await fsp.writeFile(versioned, compressed);
+  await fsp.rm(seeded.file);
+
+  const env = makeEnv(home);
+  const refs = await getStore('deepseek-harness').scan(env);
+  assert.equal(refs.length, 1, '带版本号的会话文件必须被扫描到');
+  assert.equal(refs[0].id, seeded.sessionId);
+  assert.equal(refs[0].meta.compressed, true);
+
+  const conv = await getStore('deepseek-harness').read(env, refs[0], { blobs: new Map() });
+  assert.equal(conv.messages.length, 5);
+  assert.ok(JSON.stringify(conv).includes('FAIL migration.test.js'));
+});
+
+test('DeepSeek Harness：不把同名非会话文件当成会话', async () => {
+  const home = await freshDir('deepseek-harness-noise');
+  const seeded = await seedDeepSeekHarness(home);
+  const dir = path.dirname(seeded.file);
+  await fsp.writeFile(path.join(dir, 'session.v4.jsonl.bak'), 'not a session\n');
+  await fsp.writeFile(path.join(dir, 'session-notes.jsonl'), 'not a session\n');
+
+  const refs = await getStore('deepseek-harness').scan(makeEnv(home));
+  assert.equal(refs.length, 1, '只应识别真正的 session*.jsonl[.zstd]');
+  assert.equal(refs[0].id, seeded.sessionId);
+});

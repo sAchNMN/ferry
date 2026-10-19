@@ -14,7 +14,14 @@ import { block, createConversation, deriveTitle } from '../core/ucm.js';
 import { exists, isoFrom, uid } from '../core/util.js';
 import { readHead } from './_shared.js';
 
-const SESSION_FILES = new Set(['session.jsonl', 'session.jsonl.zstd']);
+/**
+ * 会话文件名。实测（2026-10-19 本机）是 `session.v4.jsonl.zstd`，
+ * 带格式版本号；早期只认 `session.jsonl` / `session.jsonl.zstd` 导致扫描结果为 0。
+ * 同时兼容未压缩、以及未来可能的 `session.v5.jsonl`。
+ */
+function isSessionFile(name) {
+  return /^session(\.[\w-]+)*\.jsonl(\.zstd)?$/.test(name);
+}
 
 export default defineStore({
   id: 'deepseek-harness',
@@ -38,7 +45,7 @@ export default defineStore({
       if (!(await exists(root))) continue;
       await walk(root, async (file) => {
         const name = path.basename(file);
-        if (!SESSION_FILES.has(name)) return;
+        if (!isSessionFile(name)) return;
         const header = await readHeader(file);
         if (!header) return;
         const st = await fsp.stat(file).catch(() => null);
