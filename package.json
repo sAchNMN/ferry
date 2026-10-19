@@ -12,9 +12,9 @@
   "scripts": {
     "start": "node bin/ferry.js",
     "ui": "node bin/ferry.js ui",
-    "test": "node --test test/core.test.js test/adapters.test.js",
-    "test:noiso": "node --test --test-isolation=none test/core.test.js test/adapters.test.js",
-    "test:watch": "node --test --watch test/core.test.js test/adapters.test.js",
+    "test": "node --test \"test/**/*.test.js\"",
+    "test:noiso": "node --test --test-isolation=none \"test/**/*.test.js\"",
+    "test:watch": "node --test --watch \"test/**/*.test.js\"",
     "selftest": "node bin/ferry.js doctor",
     "package": "node scripts/package.mjs"
   },
