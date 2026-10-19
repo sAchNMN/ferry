@@ -7,8 +7,9 @@ import fsp from 'node:fs/promises';
 import { getStore, scanStores } from './registry.js';
 import { safeRead } from './adapter.js';
 import { createBlobStore } from './archive.js';
-import { createConversation, conversationStats, redactConversation, validateConversation } from './ucm.js';
+import { createConversation, conversationStats, conversationFingerprint, redactConversation, validateConversation } from './ucm.js';
 import { createBackup } from './backup.js';
+import { lookupImport, readLedger, recordImports } from './ledger.js';
 import { existsSync, nowIso, pathKey, readJson, writeJson } from './util.js';
 
 /* ------------------------------------------------------------------ */
@@ -30,6 +31,20 @@ export function compileMappings(rules = []) {
     if (from && to) out.push({ from, to });
   }
   return out.sort((a, b) => b.from.length - a.from.length);
+}
+
+/**
+ * 把调用方给的各种 map 形态归一成 `{from,to}[]`。
+ *
+ * 历史包袱：JSDoc 曾写 `string[]`，但实现只吃编译过的对象，第三方按 JSDoc 传字符串会崩在
+ * `mapPath` 里（`Cannot read properties of undefined`）。这里两种都接受：
+ *   ['C:\\a=/b']            → 内部编译
+ *   [{ from: 'C:\\a', to: '/b' }] → 原样过滤
+ */
+export function normalizeMap(map) {
+  if (!Array.isArray(map) || !map.length) return [];
+  if (typeof map[0] === 'string') return compileMappings(map);
+  return map.filter((m) => m && typeof m.from === 'string' && typeof m.to === 'string');
 }
 
 export function mapPath(p, mappings = []) {
@@ -278,6 +293,10 @@ export async function importConversations(env, conversations, opts = {}) {
   let backupInfo = null;
   const knownPaths = new Set();
   const createdPaths = [];
+  const map = normalizeMap(opts.map);
+  const importOpts = map === opts.map ? opts : { ...opts, map };
+  const ledger = await readLedger(env, { log });
+  const toRecord = {};
 
   if (opts.backup !== false && !opts.dryRun) {
     const scope = importScope(store.id, env);
@@ -292,7 +311,24 @@ export async function importConversations(env, conversations, opts = {}) {
   let i = 0;
   for (const conv of filtered) {
     i++;
-    const ws = resolveWorkspace(conv, opts, env);
+    const fingerprint = conversationFingerprint(conv);
+    const previous = lookupImport(ledger, store.id, fingerprint);
+    if (previous && !opts.force) {
+      results.push({
+        title: conv.title,
+        source: conv.source.name,
+        workspace: previous.workspace || null,
+        writes: [],
+        notes: [`已导入过（${previous.at}），跳过；要强制重导请加 --force`],
+        resume: null,
+        skipped: true,
+        error: null,
+      });
+      onProgress?.({ done: i, total: filtered.length, title: conv.title });
+      continue;
+    }
+
+    const ws = resolveWorkspace(conv, importOpts, env);
     const notes = [];
     if (ws.original && ws.reason === 'unverified' && !existsSync(ws.cwd)) {
       notes.push(`原项目路径在本机不存在：${ws.original}（会话会记录该路径，打开时可能提示找不到目录）`);
@@ -317,8 +353,17 @@ export async function importConversations(env, conversations, opts = {}) {
         writes: res.writes || [],
         notes: [...notes, ...(res.notes || [])],
         resume: res.resume,
+        skipped: false,
         error: null,
       });
+      if (!opts.dryRun) {
+        toRecord[fingerprint] = {
+          at: nowIso(),
+          workspace: ws.cwd,
+          sessionId: res.sessionId || null,
+          resumeCommand: res.resume?.command || null,
+        };
+      }
       // 记录本次新建的文件，回滚时删除（UUID 命名，不会覆盖已有会话）
       for (const w of res.writes || []) {
         if (!w.path || knownPaths.has(w.path)) continue;
@@ -332,10 +377,16 @@ export async function importConversations(env, conversations, opts = {}) {
         workspace: ws.cwd,
         writes: [],
         notes,
+        resume: null,
+        skipped: false,
         error: err.message,
       });
     }
     onProgress?.({ done: i, total: filtered.length, title: conv.title });
+  }
+
+  if (!opts.dryRun && Object.keys(toRecord).length) {
+    await recordImports(env, store.id, toRecord);
   }
 
   if (backupInfo && createdPaths.length) {
