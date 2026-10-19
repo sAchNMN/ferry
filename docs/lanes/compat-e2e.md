@@ -80,7 +80,19 @@ todo 是"已知缺口清单"，skip 是"假装不存在"。
 |---|---|---|---|
 | 1 | 高 | 同一归档导入两次 → 产生 2 个副本（实测 `actual: 2`）。`import` 每次生成新 sessionId，没有按指纹查重 | `feat/migration-engine` |
 | 2 | 中 | Codex 的 `session_index.jsonl` 里有 `thread_name`，但 `read()` 用 `deriveTitle` 覆盖，用户起的会话名变成首条消息截断 | adapter 分支 |
-| 3 | 中 | `importConversations({ map })` 的 JSDoc 写 `string[]`，实际必须传 `compileMappings()` 处理过的 `{from,to}[]`。传原始字符串会在 `mapPath` 里崩成 `Cannot read properties of undefined (reading 'replace')` | `feat/migration-engine`（建议内部自动编译，或至少抛带说明的错误） |
+| 3 | 中 | `importConversations({ map })` 的 JSDoc 写 `string[]`，实际必须传 `compileMappings()` 处理过的 `{from,to}[]`。传原始字符串会在 `mapPath` 里崩成 `Cannot read properties of undefined (reading 'replace')` | `feat/migration-engine` |
+| 5 | 中 | 写回的 Codex rollout 结构比真实文件少一批字段：`session_meta` 缺 `session_id` / `base_instructions` / `context_window` / `runtime_workspace_roots` / `thread_source`；`response_item` 缺 `id` / `status`；整体没有 `event_msg` / `token_usage_record` / `world_state`。**我们自己写的文件由我们自己的扫描器验证，是循环论证**，真实 `codex` CLI 是否认这些文件目前未经验证 | adapter-codex（`event_msg` / `token_usage_record` 属遥测与 UI 事件，可评估是否需要） |
+
+### 写回保真度审计方法（可复用）
+
+见 `test/e2e/write-schema.test.js`。期望值不是猜的，是从本机 112 个真实 rollout 文件统计出的结构：
+
+1. 取一条真实 Codex 会话 → 导出 → 导入到假的 codex home；
+2. 把生成文件与原始文件按 `type` 序列 + `payload` 字段集合逐项对比；
+3. 差异固化成断言：当前已满足的用真断言守住，仍缺的记 `todo` 并写明缺哪几个字段。
+
+**这一步的价值**：所有"导入后再扫描能看见"的用例，写和读都是我们自己的代码，
+天然无法证明真实应用认这些文件。只有拿真实文件当基准，才能暴露这类问题。
 
 ### 修复进度
 
