@@ -10,7 +10,10 @@ import { createBlobStore } from './archive.js';
 import { createConversation, conversationStats, conversationFingerprint, redactConversation, validateConversation } from './ucm.js';
 import { createBackup } from './backup.js';
 import { lookupImport, readLedger, recordImports } from './ledger.js';
+import { mapPath, normalizePath } from './paths.js';
 import { existsSync, nowIso, pathKey, readJson, writeJson } from './util.js';
+
+export { mapPath };
 
 /* ------------------------------------------------------------------ */
 /* 路径映射                                                            */
@@ -18,19 +21,24 @@ import { existsSync, nowIso, pathKey, readJson, writeJson } from './util.js';
 
 /**
  * 解析 "旧路径=新路径" 规则。
- * @returns {{from:string,to:string}[]}
+ *
+ * 也接受 `=>` 分隔（`C:\a => /b`），因为路径里偶尔真的会出现 `=`。
+ * 同一 from 重复出现时以最后一条为准 —— 用户在命令行里覆盖自己之前的规则是很自然的。
+ *
+ * @returns {{from:string,to:string}[]} 按 from 长度降序，保证最长前缀优先
  */
 export function compileMappings(rules = []) {
-  const out = [];
+  const byFrom = new Map();
   for (const rule of rules) {
-    if (!rule) continue;
-    const idx = rule.indexOf('=');
+    if (typeof rule !== 'string') continue;
+    const idx = rule.indexOf('=>') > 0 ? rule.indexOf('=>') : rule.indexOf('=');
     if (idx <= 0) continue;
-    const from = rule.slice(0, idx).trim();
-    const to = rule.slice(idx + 1).trim();
-    if (from && to) out.push({ from, to });
+    const width = rule[idx] === '=' && rule[idx + 1] === '>' ? 2 : 1;
+    const from = normalizePath(rule.slice(0, idx).trim());
+    const to = rule.slice(idx + width).trim();
+    if (from && to) byFrom.set(from.toLowerCase(), { from, to });
   }
-  return out.sort((a, b) => b.from.length - a.from.length);
+  return [...byFrom.values()].sort((a, b) => b.from.length - a.from.length);
 }
 
 /**
@@ -45,21 +53,6 @@ export function normalizeMap(map) {
   if (!Array.isArray(map) || !map.length) return [];
   if (typeof map[0] === 'string') return compileMappings(map);
   return map.filter((m) => m && typeof m.from === 'string' && typeof m.to === 'string');
-}
-
-export function mapPath(p, mappings = []) {
-  if (!p) return p;
-  const norm = String(p).replace(/\//g, '\\');
-  for (const { from, to } of mappings) {
-    const f = from.replace(/\//g, '\\').replace(/\\+$/, '');
-    const n = norm.replace(/\\+$/, '');
-    if (n === f || n.toLowerCase() === f.toLowerCase()) return to;
-    if (n.toLowerCase().startsWith(f.toLowerCase() + '\\')) {
-      const rest = norm.slice(from.replace(/\//g, '\\').replace(/\\+$/, '').length + 1);
-      return path.join(to, rest);
-    }
-  }
-  return p;
 }
 
 export function basenameAny(p) {

@@ -15,6 +15,17 @@
 
 让"换一台电脑接着用"这件事在语义上正确，而不是只把文件搬过去。
 
+### 进度
+
+| 目标 | 状态 | 说明 |
+|---|---|---|
+| 导入幂等 | ✅ 完成 | 台账 `<ferryHome>/imported.json` + `--force` |
+| map 参数归一 | ✅ 完成 | `normalizeMap()`，字符串与对象都收 |
+| 跨平台路径映射 | ✅ 完成 | `src/core/paths.js`，18 条边界用例 |
+| git-remote 匹配 | ⏳ 待做 | 源与目标 remote 相同即视为同一项目 |
+| 长会话追加而非覆盖 | ⏳ 待做 | 依赖幂等台账的 workspace 记录 |
+| 导入事务化 / 中断恢复 | ⏳ 待做 | 现在是"failed 单条跳过"，没有整批回滚 |
+
 1. **跨平台路径映射**：`C:\work\proj` ↔ `/Users/x/proj` ↔ `/home/x/proj`，
    覆盖盘符大小写、UNC、WSL `/mnt/c/`、Unicode 路径、同名目录。
 2. **workspace 解析**：现有 `map / workspace / into / same-machine / unverified / cwd` 六种策略之外，
