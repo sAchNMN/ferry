@@ -4,6 +4,7 @@
  */
 import zlib from 'node:zlib';
 import { FerryError } from './util.js';
+import { assertSafeEntryName, createBudget, mergeLimits } from './limits.js';
 
 const SIG_EOCD = 0x06054b50;
 const SIG_CD = 0x02014b50;
@@ -15,7 +16,9 @@ const SIG_ZIP64_LOCATOR = 0x07064b50;
  * @param {Buffer} buf
  * @returns {{name:string, data:Buffer, mtime:Date, method:number}[]}
  */
-export function readZip(buf) {
+export function readZip(buf, opts = {}) {
+  const limits = mergeLimits(opts.limits);
+  const budget = createBudget(limits);
   const eocdOffset = findEocd(buf);
   if (eocdOffset < 0) throw new FerryError('不是有效的 ZIP 文件（找不到目录结尾）', { code: 'EBADZIP' });
 
@@ -65,6 +68,7 @@ export function readZip(buf) {
     p += 46 + nameLen + extraLen + commentLen;
 
     if (name.endsWith('/')) continue;
+    assertSafeEntryName(name);
     if (flags & 0x1) throw new FerryError(`ZIP 内文件已加密，无法读取：${name}`, { code: 'EZIPCRYPT' });
     if (localOffset + 30 > buf.length) continue;
     if (buf.readUInt32LE(localOffset) !== SIG_LOCAL) continue;
@@ -79,7 +83,7 @@ export function readZip(buf) {
       data = Buffer.from(comp);
     } else if (method === 8) {
       try {
-        data = zlib.inflateRawSync(comp, { maxOutputLength: 1024 * 1024 * 1024 });
+        data = zlib.inflateRawSync(comp, { maxOutputLength: limits.maxEntryBytes });
       } catch (err) {
         throw new FerryError(`ZIP 解压失败：${name}（${err.message}）`, { code: 'EZIPINFLATE' });
       }
@@ -88,6 +92,7 @@ export function readZip(buf) {
     }
 
     entries.push({ name, data, mtime: dosToDate(date, time), method });
+    budget.add(data.length, name);
   }
 
   return entries;
