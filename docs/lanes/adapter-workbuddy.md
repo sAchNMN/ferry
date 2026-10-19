@@ -112,10 +112,70 @@ node --test test/adapters/workbuddy.test.js   # 13 条
 |---|---|---|---|---|
 | 1 | 高 | `insertLoose` 的模板是 `SELECT * FROM sessions LIMIT 1`，未显式赋值的列全被那一行的值填满 → 迁移会话的 `source_mode` 从 `craft` 变 `coding`、`permission_mode` 从 `fullAccess` 变 `bypassPermissions` | `src/core/sqlite.js:66` | ✅ 模板只用于满足 NOT NULL 约束 |
 | 2 | 中 | `context_window` / `thought_level` / `addon_selection` 源行有值，迁移后为 `null`（导出侧根本没采集） | adapter | ✅ 导出带进 `meta.sessionSettings`，写回原样落库 |
-| 3 | 低 | `workspaces.path` 写成正斜杠，而该表既有 28 行全是反斜杠（`sessions.cwd` 确实用正斜杠） | `registerSession` | ✅ 按 `env.platform` 转原生分隔符 |
+| 3 | 低 | `workspaces.path` 写成正斜杠，而该表既有 28 行全是反斜杠 | `registerSession` | ✅ 按 `env.platform` 转原生分隔符 |
+
+> **2026-10-19 更正**：当初给这条缺陷写的理由「`sessions.cwd` 确实用正斜杠」是**错的**。
+> 真机 131 行 `sessions.cwd`：反斜杠 73 行（2026-07-27 ~ 2026-09-24）、正斜杠 56 行
+> （2026-09-30 ~ 2026-10-19），两种形态按时间分层；而会话**正文**里的 `cwd` 抽样 40 个文件
+> 有 39 个是反斜杠。结论：这张表**没有单一约定**，两种形态应用都认，别再把"必须用正斜杠"
+> 当成硬约束写进断言。
+> 连带结论：跨适配器来源（L2）写入的 `sessions.cwd` 沿用源端形态（DSH 是反斜杠），
+> **不是 bug，不改**。
 | 4 | 低 | 导入结束的 resume 提示第二行打印 `undefined` | `src/cli.js` | ✅ 无命令时不打印 |
 
-### 修复后的实测（在数据库副本上跑，不碰活动库）
+### 缺陷 5（2026-10-19 L2 复验发现，已修）：工具结果挂在 user 轮次上被整段丢弃
+
+| # | 严重度 | 现象 | 位置 | 状态 |
+|---|---|---|---|---|
+| 5 | 高 | DeepSeek Harness → WorkBuddy，33 个真实会话里有 **2 个会话、119 条工具结果全部消失**：源端把部分工具输出拼接进用户轮次，UCM 里这些 `tool_result` 块挂在 `role: 'user'` 的消息上，而写回只认 `role === 'tool'` → 留下 119 个「有 `function_call` 没有 `function_call_result`」的孤儿调用（最大单条输出 35KB） | `src/adapters/workbuddy.js` `import()` | ✅ 任何 role 的块都扫一遍；没有 `callId` 的结果不写成孤儿，改为计数并写进 notes |
+
+**定位过程（不是猜的）**：解码全部 34 份 DSH 原始 v4 日志 → 每个会话 `tool/call` 与 `tool/result`
+数量**严格相等**、零孤儿；再对账归档 UCM → 2,858 个 `tool_result` 块里 2,739 个在 `role: 'tool'`、
+**119 个在 `role: 'user'`**。所以丢在**写入侧**，不是读取侧，也不是源数据。
+
+**修复后的实测**（同一份真实归档重新导入）：
+
+| 项 | 修复前 | 修复后 |
+|---|---|---|
+| `function_call` / `function_call_result` | 2,858 / 2,739 | 2,858 / **2,858** |
+| 孤儿调用 | 119（2 个文件） | **0** |
+| 事件总行数 | 8,084 | 8,203（+119） |
+
+守护用例两条（都做过「破坏实现确认变红」）：`导入：工具结果挂在 user 轮次上也要写回`、
+`导入：没有 callId 的工具结果不写成孤儿，而是如实计数`。
+
+## L2 复验（2026-10-19，DeepSeek Harness → WorkBuddy）
+
+「整体在应用内点开」这步只能人做，其余六条在**真库副本**上全跑了一遍（临时 home：
+真实 `workbuddy.db` 三件套 + `storage/`，`projects/` 留空，不动活动库）：
+
+| 门槛 | 结果 |
+|---|---|
+| 1 真实数据导出 0 错误 | ✅ 33 个会话 / 5,453 条消息 / 302 万字符 |
+| 2 `--dry-run` 零写盘 | ✅ 目录快照 `added 0 / removed 0 / changed 0`（34 个文件逐字节） |
+| 3 目标历史列表可见 | ✅ `sessions` 表 25 行，必需字段（`user_id`/`source_mode`/`mode`/`permission_mode`/`use_sandbox_cli`/`model`）全非空；`user_id` 沿用真机值；`workspaces` 29 → 38 行 |
+| 4 重启仍在 | ✅ 文件与库行都在（重启=人做，可离线等价的部分已验） |
+| 5 点开发消息 | ⏳ **仍需人做** |
+| 6 二次导入幂等 | ✅ 25/25 `skipped`，无副本 |
+| 7 `rollback` 还原 | ✅ 恢复 3 个文件、删除 25 个新建文件、台账移除 25 条；快照 `0/0/0`；`scan` 回到 0 会话 |
+
+补充的结构证据（基准是真机 128 个真实会话文件，不是我们自己的解析器）：
+
+- 6 种事件类型的字段集合**没有多出一个键**；只缺 `_meta` / `status` / `message` /
+  `logicalParentId` / `__codebuddyLocal` 这类运行时才有的可选字段（不伪造，符合写回原则）。
+- 25 个文件的 `parentId` 链无断链、`sessionId` 与文件名一致、`ai-title` 不带 `parentId`。
+- 真机文件里也有 11 个「有调用没结果」（14,242 条里），说明该格式容忍未完成调用 ——
+  所以修复后按**完整配对**写入是更严格的做法，不是过度设计。
+
+**发现但不在本 lane 修的两件事**
+
+1. **8 个空会话被静默丢掉**：导出 33 个，导入只处理 25 个 —— `migrate.js` 里
+   `conversations.filter((c) => c.messages?.length)` 直接过滤，CLI 计划里仍写「会话 33 个」，
+   结果只报「25 个已写入」，中间的 8 没有任何提示。这些会话在 DSH 源端确实是 0 消息
+   （目录里只有 317~944 字节的日志），丢得对，但**应该说出来**。涉及 `src/core/migrate.js`
+   与 `src/cli.js`（后者正被并行会话改着），已记录未动。
+2. **8 个 DSH 空会话的标题退化为 `DeepSeek 会话 session-`**（id 后缀为空），
+   属 `deepseek-harness.js` 读取侧，归 DSH lane。
 
 | 场景 | 结果 |
 |---|---|

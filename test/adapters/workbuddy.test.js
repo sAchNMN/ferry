@@ -19,6 +19,7 @@ import { getStore } from '../../src/core/registry.js';
 import { collectForExport, importConversations } from '../../src/core/migrate.js';
 import { createBlobStore } from '../../src/core/archive.js';
 import { openDb, insertLoose, closeQuietly } from '../../src/core/sqlite.js';
+import { block, createConversation } from '../../src/core/ucm.js';
 import workbuddy, { projectSlug, cleanUserText } from '../../src/adapters/workbuddy.js';
 
 const SESSION_ID = 'a4f7a33a-e647-468f-b88b-673ef55e91ec';
@@ -294,6 +295,65 @@ test('导入：写进正确项目目录并登记 sessions 表', async () => {
   assert.equal(row.user_id, TEMPLATE_ROW.user_id);
   assert.equal(row.status, 'completed');
   assert.equal(row.title, '修复登录页报错');
+});
+
+/**
+ * L2（DeepSeek Harness → WorkBuddy）实测暴露的问题：
+ * 源端会把部分工具输出拼接进用户轮次，UCM 里这些 `tool_result` 块挂在 `role: 'user'` 的消息上。
+ * 写回只认 `role === 'tool'` 的话，它们整段消失，只留下「有 function_call 没有结果」的孤儿调用
+ * —— 真机 33 个会话里中招 2 个、119 条结果（最大单条 35KB）。
+ */
+test('导入：工具结果挂在 user 轮次上也要写回（跨适配器来源）', async () => {
+  const home = await freshDir('wb-result-on-user');
+  await seedDb(home, [TEMPLATE_ROW]);
+  const conv = createConversation({
+    title: '审阅精简计划',
+    source: { adapter: 'deepseek-harness', name: 'DeepSeek Harness' },
+    workspace: { cwd: 'C:\\work\\ds' },
+    messages: [
+      { role: 'user', blocks: [block.text('看一下目录结构')] },
+      { role: 'assistant', blocks: [block.toolCall('powershell', { command: 'ls' }, 'call-1')] },
+      { role: 'user', blocks: [block.toolResult('call-1', 'bin\ndocs\nsrc')] },
+      { role: 'assistant', blocks: [block.text('目录如上')] },
+    ],
+  });
+
+  const res = await importConversations(makeEnv(home), [conv], { target: 'workbuddy', backup: false });
+  assert.equal(res.results[0].error, null);
+
+  const dir = path.join(home, '.workbuddy', 'projects', projectSlug('C:\\work\\ds'));
+  const file = fs.readdirSync(dir).find((f) => f.endsWith('.jsonl'));
+  const lines = fs.readFileSync(path.join(dir, file), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  const calls = lines.filter((l) => l.type === 'function_call');
+  const results = lines.filter((l) => l.type === 'function_call_result');
+  assert.equal(calls.length, 1);
+  assert.equal(results.length, 1, '挂在 user 轮次上的工具结果也必须写回，不能留孤儿调用');
+  assert.equal(results[0].callId, calls[0].callId);
+  assert.match(results[0].output.text, /src/);
+  assert.ok(lines.indexOf(results[0]) > lines.indexOf(calls[0]), '结果必须排在调用之后');
+});
+
+test('导入：没有 callId 的工具结果不写成孤儿，而是如实计数', async () => {
+  const home = await freshDir('wb-result-no-callid');
+  await seedDb(home, [TEMPLATE_ROW]);
+  const conv = createConversation({
+    title: '缺 callId',
+    source: { adapter: 'deepseek-harness', name: 'DeepSeek Harness' },
+    workspace: { cwd: 'C:\\work\\nocall' },
+    messages: [
+      { role: 'user', blocks: [block.text('跑一下')] },
+      { role: 'tool', blocks: [block.toolResult('', '没有归属的输出')] },
+    ],
+  });
+
+  const res = await importConversations(makeEnv(home), [conv], { target: 'workbuddy', backup: false });
+  assert.equal(res.results[0].error, null);
+
+  const dir = path.join(home, '.workbuddy', 'projects', projectSlug('C:\\work\\nocall'));
+  const file = fs.readdirSync(dir).find((f) => f.endsWith('.jsonl'));
+  const lines = fs.readFileSync(path.join(dir, file), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.equal(lines.filter((l) => l.type === 'function_call_result').length, 0);
+  assert.match(res.results[0].notes.join(' '), /缺少 callId/);
 });
 
 test('导入：目标机没有 workbuddy.db 时只写会话文件，并如实说明', async () => {

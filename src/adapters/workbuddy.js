@@ -306,6 +306,7 @@ export default defineStore({
     let parentId = null;
     let clock = now;
     let skippedBlocks = 0;
+    let unpairedResults = 0;
 
     /**
      * 写一行事件。字段对齐**真实 WorkBuddy 文件**（本机 120 个会话统计出来的集合），
@@ -348,6 +349,38 @@ export default defineStore({
 
     emit('session-meta', { meta: { 'codebuddy.ai/hostKind': 'unopted' } }, { first: true });
 
+    /**
+     * 工具结果**不一定**挂在 `role: 'tool'` 的消息上。
+     *
+     * 实测（2026-10-19，DSH → WorkBuddy，33 个真实会话）：归档里 2,858 个 tool_result 块中有
+     * 119 个挂在 `role: 'user'` 的消息里 —— DeepSeek Harness 会把部分工具输出拼接进用户轮次，
+     * 读取侧据此如实标了 user。只认 'tool' 的旧写法把这 119 条整段丢掉，
+     * 留下 119 个「有 function_call 却没有 function_call_result」的孤儿调用，
+     * 迁移过去的工具调用全部没有输出（最大单条 35KB）。
+     * 所以任何 role 的块都要扫一遍；没有 callId 的结果无法配对，跳过并计入 notes。
+     */
+    const emitToolResults = (message, ts) => {
+      for (const b of message.blocks || []) {
+        if (b.type !== 'tool_result') continue;
+        if (!b.callId) {
+          // 没有 callId 的结果写进去就是一条孤儿记录（真机 14,238 条结果里没有一条是孤儿），
+          // 宁可不写，也要如实计数
+          unpairedResults++;
+          continue;
+        }
+        emit(
+          'function_call_result',
+          {
+            name: b.name || 'tool',
+            callId: b.callId,
+            output: { type: 'text', text: b.output || '' },
+            status: b.isError ? 'error' : 'completed',
+          },
+          { providerFor: 'assistant', timestamp: ts },
+        );
+      }
+    };
+
     for (const m of conv.messages || []) {
       if (m.role === 'system' || m.meta?.internal) continue;
       const ts = toMs(m.createdAt) ?? clock++;
@@ -362,8 +395,10 @@ export default defineStore({
             else skippedBlocks++;
           }
         }
-        if (!content.length) continue;
-        emit('message', { role: 'user', content, status: 'completed' }, { providerFor: 'user', timestamp: ts });
+        if (content.length) {
+          emit('message', { role: 'user', content, status: 'completed' }, { providerFor: 'user', timestamp: ts });
+        }
+        emitToolResults(m, ts);
         continue;
       }
 
@@ -391,24 +426,12 @@ export default defineStore({
             skippedBlocks++;
           }
         }
+        emitToolResults(m, ts);
         continue;
       }
 
-      if (m.role === 'tool') {
-        for (const b of m.blocks || []) {
-          if (b.type !== 'tool_result') continue;
-          emit(
-            'function_call_result',
-            {
-              name: b.name || 'tool',
-              callId: b.callId || '',
-              output: { type: 'text', text: b.output || '' },
-              status: b.isError ? 'error' : 'completed',
-            },
-            { providerFor: 'assistant', timestamp: ts },
-          );
-        }
-      }
+      // role === 'tool' 是常规形态；其余 role 也可能是结果载体，走同一个函数
+      emitToolResults(m, ts);
     }
 
     emit('ai-title', { aiTitle: firstLine(conv.title, 120) || '迁移的会话' }, { timestamp: clock++, last: true });
@@ -418,6 +441,7 @@ export default defineStore({
     const userMsgCount = lines.filter((l) => l.includes('"role":"user"')).length;
     if (!userMsgCount) notes.push('该会话没有可导入的用户消息，导入后可能显示为空会话');
     if (skippedBlocks) notes.push(`${skippedBlocks} 个附件/图片没有可用的二进制内容，已跳过`);
+    if (unpairedResults) notes.push(`${unpairedResults} 条工具结果缺少 callId，无法与调用配对，已跳过`);
 
     const previewWrites = [
       { path: file, bytes: Buffer.byteLength(data), kind: 'workbuddy-session', preview: true },

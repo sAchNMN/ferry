@@ -61,7 +61,7 @@ ChatGPT 那一路**物理上永远只能当来源**，且已移出范围。
 | # | 链路 | 模式 | 状态 |
 |---|---|---|---|
 | L1 | WorkBuddy（A 机）→ WorkBuddy（B 机） | 原生续聊 | ✅ **2026-10-19 端到端验通**：真实会话导入后侧栏可见、点开内容完整、发消息拿到回复、应用继续往迁移文件里追加事件 |
-| L2 | DeepSeek Harness → WorkBuddy | 原生续聊 | 读取侧 ✅ 2026-10-19 用本机 30 个真实会话验通（4,681 条消息，0 错误）；写入侧同 L1；整体在应用内点开待单独验 |
+| L2 | DeepSeek Harness → WorkBuddy | 原生续聊 | 读取侧 ✅ 2026-10-19 用本机 33 个真实会话验通（5,453 条消息，0 错误）；写入侧同日复验：七条门槛过六条（dry-run/可见/幂等/回滚全过），过程中修掉一处丢 119 条工具结果的缺陷；**只剩「点开发消息」要人在应用里做一次** |
 | L3 | WorkBuddy ↔ Codex | 原生续聊（双向） | 写入侧结构用 112 个真实 rollout 逐字段对齐（`74ed140`）；**`codex` 自己能否读我们写的文件，未验** |
 | L4 | WorkBuddy / Codex → DeepSeek Harness | 原生续聊 | 写侧生成 v4 事件流并登记 `storages/workspace.json`；用安装包自带的 v4 解码器（`@deepseek-ai/dsh-session-format-v3-to-v4`）离线加载通过；**应用内点开未验**；导入前必须退出 Harness |
 
@@ -94,6 +94,10 @@ DSH 的风险换成两处：Harness 用**安装包内的 v4 解码器**读日志
 连同一条真实会话复制到临时 home → 导出该会话 → 导入新工作区（自动备份）→ `ferry rollback`
 → 目录快照逐字节比对 `added 0 / removed 0 / changed 0`，回滚后扫描仍能读到原会话。
 另有 9 条自动化用例守护（`test/core/backup.test.js`、`test/e2e/rollback.test.js`）。
+
+L2 的六条已在真库副本上验完（2026-10-19），详见 `docs/lanes/adapter-workbuddy.md` 的「L2 复验」。
+副本构造方式：`workbuddy.db` 三件套 + `storage/` 复制进临时 home，`projects/` 留空，
+因此「导入后 scan 能读到 N 条」「回滚后回到 0 条」都是干净断言，不依赖人眼。
 
 剩下唯一没做的：**在真库上、且目标应用正在运行时的回滚**。
 那一步会抹掉当前 `414ff90f` 的验收证据，需要所有者单独决定时机。
