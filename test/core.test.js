@@ -171,8 +171,9 @@ test('archive：未加密归档可直接读取', async () => {
 
 test('migrate：路径映射与工作区决策', async () => {
   const maps = compileMappings(['C:\\old\\proj=D:\\new\\proj', 'C:\\old=D:\\root']);
-  assert.equal(mapPath('C:\\old\\proj\\src\\a.ts', maps), path.join('D:\\new\\proj', 'src\\a.ts'));
-  assert.equal(mapPath('C:\\old\\other', maps), path.join('D:\\root', 'other'));
+  // 期望值是 Windows 目标路径，必须用字面量：宿主 path.join 在 POSIX 上会拼出混合分隔符。
+  assert.equal(mapPath('C:\\old\\proj\\src\\a.ts', maps), 'D:\\new\\proj\\src\\a.ts');
+  assert.equal(mapPath('C:\\old\\other', maps), 'D:\\root\\other');
   assert.equal(mapPath('C:\\unrelated', maps), 'C:\\unrelated');
 
   const home = await freshDir('migrate-home');
@@ -238,7 +239,7 @@ test('migrate：ImportPlan 路径映射保持零写盘', async () => {
   });
 
   assert.match(plan.writes[0].path, /D--new-proj/);
-  assert.equal(plan.workspace, path.join('D:\\new', 'proj'));
+  assert.equal(plan.workspace, 'D:\\new\\proj');
   assert.equal(
     await fsp.access(path.join(homeB, '.claude')).then(() => true).catch(() => false),
     false,

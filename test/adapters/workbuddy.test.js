@@ -429,5 +429,6 @@ test('备份范围：workbuddy.db 与 WAL 边车文件一起声明（否则快�
   const home = 'C:\\Users\\me';
   const scope = workbuddy.backupScope({ home });
   assert.deepEqual(scope.map((p) => path.basename(p)), ['workbuddy.db', 'workbuddy.db-wal', 'workbuddy.db-shm']);
-  assert.ok(scope.every((p) => path.isAbsolute(p)));
+  // home 是 Windows 路径，判定绝对路径必须用 win32 语义，否则在 POSIX 宿主上恒为 false。
+  assert.ok(scope.every((p) => path.win32.isAbsolute(p)));
 });

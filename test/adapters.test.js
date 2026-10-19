@@ -228,7 +228,7 @@ test('导入：路径映射生效', async () => {
     map: [{ from: 'C:\\old', to: 'D:\\new' }],
     backup: false,
   });
-  assert.equal(res.results[0].workspace, path.join('D:\\new', 'proj'));
+  assert.equal(res.results[0].workspace, 'D:\\new\\proj');
 });
 
 /* ------------------------------------------------------------------ */

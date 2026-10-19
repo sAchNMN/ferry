@@ -35,6 +35,7 @@ import crypto from 'node:crypto';
 import { defineStore } from '../core/adapter.js';
 import { block, createConversation } from '../core/ucm.js';
 import { ensureDir, exists, isoFrom, uid } from '../core/util.js';
+import { splitPath } from '../core/paths.js';
 import { closeQuietly, columns, insertLoose, openDb, sampleRow, tableExists } from '../core/sqlite.js';
 import { firstLine, forEachLine, readHead, writeRecord } from './_shared.js';
 
@@ -601,7 +602,8 @@ async function expandPersisted(env, ref, text) {
   if (!m) return text;
   const recorded = m[1].trim();
   const file = await resolveStored(recorded, (p) =>
-    path.join(env.home, '.workbuddy', 'projects', ref.meta?.projectSlug || '', ref.id, 'tool-results', path.basename(p)),
+    // 末段必须跨平台取：POSIX 上 path.basename 会把整个 `C:\...\x.txt` 当文件名。
+    path.join(env.home, '.workbuddy', 'projects', ref.meta?.projectSlug || '', ref.id, 'tool-results', splitPath(p).parts.at(-1) || ''),
   );
   if (!file) return text;
   try {
