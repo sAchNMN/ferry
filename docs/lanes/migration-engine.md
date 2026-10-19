@@ -6,7 +6,7 @@
 | 项 | 值 |
 |---|---|
 | 分支 | `feat/migration-engine` |
-| 工作目录 | `C:\Users\34759\Desktop\ferry-wt-engine` |
+| 工作目录 | `%USERPROFILE%\Desktop\ferry-wt-engine` |
 | 基线 | `integration` @ `ferry-contract-v1` |
 | 合并方向 | → `integration`（squash），禁止直接合 `master` |
 | 主责 | 迁移语义本身：路径、去重、事务、回滚、CLI |

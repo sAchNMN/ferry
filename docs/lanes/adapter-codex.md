@@ -9,7 +9,7 @@
 | 项 | 值 |
 |---|---|
 | 分支 | `feat/adapter-codex` |
-| 工作目录 | `C:\Users\34759\Desktop\ferry-wt-codex` |
+| 工作目录 | `%USERPROFILE%\Desktop\ferry-wt-codex` |
 | 基线 | `integration` @ `5dcc569` |
 | 合并方向 | → `integration`（squash） |
 | 主责 | Codex 的读写双向：扫描、读取、写回 rollout、索引与 threads 表 |

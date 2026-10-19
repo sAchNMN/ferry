@@ -6,7 +6,7 @@
 | 项 | 值 |
 |---|---|
 | 分支 | `feat/package-conversion` |
-| 工作目录 | `C:\Users\34759\Desktop\ferry-wt-package` |
+| 工作目录 | `%USERPROFILE%\Desktop\ferry-wt-package` |
 | 基线 | `integration` @ `ferry-contract-v1` |
 | 合并方向 | → `integration`（squash），禁止直接合 `master` |
 | 主责 | 容器、加密、校验、渲染与脱敏 |

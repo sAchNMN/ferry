@@ -6,7 +6,7 @@
 | 项 | 值 |
 |---|---|
 | 分支 | `test/compat-e2e` |
-| 工作目录 | `C:\Users\34759\Desktop\ferry-wt-e2e` |
+| 工作目录 | `%USERPROFILE%\Desktop\ferry-wt-e2e` |
 | 基线 | `integration` @ `ferry-contract-v1` |
 | 合并方向 | → `integration`（squash），禁止直接合 `master` |
 | 主责 | 当裁判：定义"什么叫迁移成功"，并且只判不修 |

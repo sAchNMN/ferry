@@ -432,7 +432,7 @@ J   → qa
 **第 1 步（今天）**
 
 ```bash
-cd C:/Users/34759/Desktop/Thdr
+cd ~/Desktop/Thdr
 git init
 git add -A && git commit -m "chore: 初始化 Ferry 项目基线"
 git tag v0.1.0-baseline
