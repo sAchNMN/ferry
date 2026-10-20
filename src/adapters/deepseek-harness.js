@@ -125,10 +125,11 @@ const RESUME_HINT =
  * Harness 的 header.cwd 必须是绝对路径，否则它自己的 header 校验会拒收。
  */
 function importCwd(env, conv, opts) {
+  const pathApi = env.platform === 'win32' ? path.win32 : path.posix;
   for (const candidate of [opts.workspace, conv?.workspace?.cwd, env.cwd]) {
-    if (typeof candidate === 'string' && candidate && path.isAbsolute(candidate)) return candidate;
+    if (typeof candidate === 'string' && candidate && pathApi.isAbsolute(candidate)) return candidate;
   }
-  return path.resolve(env.cwd || '.');
+  return pathApi.resolve(env.cwd || '.');
 }
 
 /** Harness 的会话根目录（写回固定用当前版本的 ~/.dsh，不猜历史目录）。 */
@@ -145,17 +146,19 @@ function workspaceIndexPath(env) {
 }
 
 /** Harness 用 fs.realpath 作为 workspace 路径的唯一规范；目录不存在时退回归一化路径。 */
-async function canonicalPath(value) {
+async function canonicalPath(value, platform = process.platform) {
+  const pathApi = platform === 'win32' ? path.win32 : path.posix;
+  if (platform !== process.platform) return pathApi.resolve(value);
   try {
     return await fsp.realpath(value);
   } catch {
-    return path.resolve(value);
+    return pathApi.resolve(value);
   }
 }
 
 async function writeConversation(env, conv, opts = {}) {
   const requested = importCwd(env, conv, opts);
-  const canonical = await canonicalPath(requested);
+  const canonical = await canonicalPath(requested, env.platform);
   const sessionId = uid('session-');
   const indexFile = workspaceIndexPath(env);
 
