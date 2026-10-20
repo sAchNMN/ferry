@@ -32,11 +32,17 @@ Ferry 是一个零依赖、跨平台（Windows / macOS / Linux）的本地工具
 # 1. 看看这台电脑上有什么
 node bin/ferry.js scan
 
-# 2. 全部打包（加密可加 --encrypt）
+# 2. 全部打包（加密可加 --encrypt；连项目文件一起带走加 --projects）
 node bin/ferry.js export --all -o backup.ferrypack
+
+# 2.1 会话 + 项目文件一键打包（默认排除 .git、依赖目录和凭据）
+node bin/ferry.js export --all --projects -o bundle.ferrypack
 
 # 3. 把 backup.ferrypack 拷到新电脑，先看它准备写什么
 node bin/ferry.js import backup.ferrypack --to codex --dry-run
+
+# 3.1 在新电脑恢复项目文件，并自动映射会话工作区
+node bin/ferry.js import bundle.ferrypack --to codex --restore-projects D:\Projects\Restored -y
 
 # 4. 确认后真正写入
 node bin/ferry.js import backup.ferrypack --to codex --workspace D:\work\myproj
@@ -170,7 +176,8 @@ Ferry 在导入时会做三件事：
 3. 在安全的前提下登记数据库（`threads` 表 / Copilot 的 `session-store.db`），
    SQLite 用"读现有行做模板 + 动态列"的方式写入，兼容不同版本的 schema。
 
-工作区路径会按规则重写：`--workspace` 指定新项目目录，或 `--map "C:\old=D:\new"` 做前缀映射，
+工作区路径会按规则重写：`--workspace` 指定新项目目录，或 `--map "C:\old=D:\new"` 做前缀映射；
+带项目快照的归档可用 `--restore-projects DIR` 恢复到新电脑，Ferry 会自动把会话工作区映射到新目录，
 也可以 `--into D:\projects` 自动落到同名目录下。**只映射元数据，不改写消息里的历史路径**——
 这是有意的：改了会让对话内容失真。
 
@@ -195,9 +202,10 @@ Ferry 在导入时会做三件事：
 ferry scan                         扫描本机 Agent 与会话
 ferry targets                      支持矩阵（导出 / 原生导入 / 续聊）
 ferry export --all -o x.ferrypack  导出全部
+ferry export --all --projects -o bundle.ferrypack  会话 + 项目文件
 ferry export --agent codex --since 7d --encrypt
 ferry export --agent chatgpt-export --to handoff -o ./handoff
-ferry import x.ferrypack --to codex [--workspace DIR] [--map OLD=NEW] [--dry-run]
+ferry import x.ferrypack --to codex [--workspace DIR] [--map OLD=NEW] [--restore-projects DIR] [--dry-run]
 ferry list x.ferrypack             归档清单
 ferry show x.ferrypack [关键字]    渲染会话（Markdown）
 ferry unpack x.ferrypack ./out     摊开成普通文件
@@ -228,8 +236,8 @@ ferry import recent.ferrypack --to claude-code --workspace D:\work\proj
 `ferry ui` 启动后：
 
 - **总览**：本机装了哪些 Agent、多少会话、最近活动；点卡片直接进入导出。
-- **导出**：勾选 Agent、时间范围、脱敏与加密开关，生成并下载 `.ferrypack`。
-- **导入**：拖入文件 → 浏览会话 → 预览 Markdown → 选目标 Agent 与项目目录 → 预演/导入。
+- **导出**：勾选 Agent、时间范围、脱敏、加密与“包含项目文件”，生成并下载 `.ferrypack`。
+- **导入**：拖入文件 → 浏览会话 → 预览 Markdown → 选目标 Agent、项目目录和项目恢复目录 → 预演/导入。
 - **归档**：查看自动备份并回滚。
 - **设置**：运行环境与能力矩阵。
 
@@ -253,7 +261,7 @@ ferry import recent.ferrypack --to claude-code --workspace D:\work\proj
 ## 开发
 
 ```bash
-npm test          # 160 个测试：tar/zip/crypto/归档/脱敏/路径映射/幂等/适配器往返
+npm test          # 161 个测试：tar/zip/crypto/归档/脱敏/路径映射/幂等/适配器往返
 node bin/ferry.js doctor
 npm run package   # 生成 dist/ferry-<version>.tar.gz（可直接拷到别的机器）
 ```

@@ -35,6 +35,7 @@ export const PACK_EXT = '.ferrypack';
 
 const CONV_PREFIX = 'conversations/';
 const BLOB_PREFIX = 'blobs/';
+const PROJECT_PREFIX = 'projects/';
 
 export function isPackFile(file) {
   return /\.ferrypack$/i.test(file) || /\.ferryp$/i.test(file);
@@ -79,6 +80,7 @@ export function createBlobStore() {
  * @param {object} opts
  * @param {object[]} opts.conversations
  * @param {ReturnType<typeof createBlobStore>|Map} [opts.blobs]
+ * @param {{id:string,name:string,originalPath:string,files:{path:string,data:Buffer,bytes?:number,sha256?:string}[]}[]} [opts.projects]
  * @param {string} [opts.password]
  * @param {object} [opts.meta] 额外写进 manifest 的信息
  */
@@ -136,6 +138,27 @@ export async function writePack(file, opts) {
     manifestBlobs.push({ sha256: hash, file: `${BLOB_PREFIX}${hash}`, bytes: b.data.length, mime: b.mime, name: b.name || null });
   }
 
+  const manifestProjects = [];
+  for (const project of opts.projects || []) {
+    const id = String(project.id || '');
+    if (!/^[a-zA-Z0-9_-]+$/.test(id)) throw new FerryError(`项目编号不安全：${id}`, { code: 'EBADPROJECT' });
+    const files = [];
+    for (const projectFile of project.files || []) {
+      assertSafeEntryName(projectFile.path);
+      const data = Buffer.isBuffer(projectFile.data) ? projectFile.data : Buffer.from(projectFile.data || '');
+      const name = `${PROJECT_PREFIX}${id}/${projectFile.path}`;
+      entries.push({ name, data, mtime: new Date() });
+      files.push({ path: projectFile.path, file: name, bytes: data.length, sha256: sha256(data) });
+    }
+    manifestProjects.push({
+      id,
+      name: safeName(project.name, 'project'),
+      originalPath: project.originalPath,
+      files,
+      bytes: files.reduce((sum, item) => sum + item.bytes, 0),
+    });
+  }
+
   const sources = [...new Set(manifestConvs.map((c) => c.adapter))].map((adapter) => ({
     adapter,
     conversations: manifestConvs.filter((c) => c.adapter === adapter).length,
@@ -161,11 +184,15 @@ export async function writePack(file, opts) {
       chars: totalChars,
       blobs: manifestBlobs.length,
       blobBytes: manifestBlobs.reduce((a, b) => a + b.bytes, 0),
+      projects: manifestProjects.length,
+      projectFiles: manifestProjects.reduce((a, project) => a + project.files.length, 0),
+      projectBytes: manifestProjects.reduce((a, project) => a + project.bytes, 0),
       payloadBytes: entries.reduce((a, e) => a + (e.data?.length || 0), 0),
     },
     sources,
     conversations: manifestConvs,
     blobs: manifestBlobs,
+    projects: manifestProjects,
     notes: meta.notes || [],
   };
 
@@ -310,7 +337,31 @@ export function readPackBuffer(raw, opts = {}) {
     conversations.push(conversation);
   }
 
-  return { manifest, conversations, blobs, warnings, encrypted: isEncrypted(raw), bytes: raw.length };
+  const projects = [];
+  for (const project of manifest.projects || []) {
+    if (!/^[a-zA-Z0-9_-]+$/.test(String(project.id || ''))) {
+      throw new FerryError(`项目编号不合法：${project.id}`, { code: 'EBADPROJECT' });
+    }
+    const files = [];
+    for (const item of project.files || []) {
+      assertSafeEntryName(item.path);
+      const entry = byName.get(item.file);
+      if (!entry) {
+        warnings.push(`项目文件缺失：${project.name || project.id}/${item.path}`);
+        continue;
+      }
+      if (verify && item.sha256 && sha256(entry.data) !== item.sha256) {
+        throw new FerryError(`项目文件校验失败：${project.name || project.id}/${item.path}`, {
+          code: 'ECHECKSUM',
+          hint: '归档可能损坏，请重新拷贝后再恢复。',
+        });
+      }
+      files.push({ path: item.path, data: entry.data, bytes: entry.data.length, sha256: item.sha256 });
+    }
+    projects.push({ id: project.id, name: project.name, originalPath: project.originalPath, files, bytes: project.bytes || 0 });
+  }
+
+  return { manifest, conversations, blobs, projects, warnings, encrypted: isEncrypted(raw), bytes: raw.length };
 }
 
 /* ------------------------------------------------------------------ */
@@ -327,6 +378,7 @@ export async function unpackTo(file, dir, opts = {}) {
   const pack = await readPack(file, opts);
   await ensureDir(path.join(dir, 'conversations'));
   await ensureDir(path.join(dir, 'blobs'));
+  await ensureDir(path.join(dir, 'projects'));
   for (const conv of pack.conversations) {
     await fsp.writeFile(
       path.join(dir, 'conversations', `${safeName(conv.id)}.json`),
@@ -338,9 +390,18 @@ export async function unpackTo(file, dir, opts = {}) {
     assertSafeHash(hash);
     await fsp.writeFile(path.join(dir, 'blobs', hash), b.data);
   }
+  for (const project of pack.projects || []) {
+    const target = path.join(dir, 'projects', `${project.id}-${safeName(project.name, 'project')}`);
+    for (const file of project.files || []) {
+      assertSafeEntryName(file.path);
+      const destination = path.join(target, ...file.path.split('/'));
+      await ensureDir(path.dirname(destination));
+      await fsp.writeFile(destination, file.data);
+    }
+  }
   const { manifest, ...rest } = pack;
   await fsp.writeFile(path.join(dir, 'manifest.json'), JSON.stringify({ manifest, warnings: rest.warnings }, null, 2), 'utf8');
-  return { dir, conversations: pack.conversations.length, blobs: pack.blobs.size };
+  return { dir, conversations: pack.conversations.length, blobs: pack.blobs.size, projects: pack.projects?.length || 0 };
 }
 
 export function summarizeManifest(manifest) {
@@ -349,6 +410,7 @@ export function summarizeManifest(manifest) {
   lines.push(`生成时间  ${manifest.createdAt}`);
   lines.push(`会话      ${manifest.stats.conversations} 个 / ${manifest.stats.messages} 条消息`);
   lines.push(`体积      ${formatBytes(manifest.stats.archiveBytes || manifest.stats.payloadBytes || 0)}（附件 ${formatBytes(manifest.stats.blobBytes || 0)}）`);
+  if (manifest.stats.projects) lines.push(`项目      ${manifest.stats.projects} 个 / ${manifest.stats.projectFiles || 0} 个文件`);
   if (manifest.encryption?.enabled) lines.push(`加密      ${manifest.encryption.cipher}`);
   lines.push(`来源      ${(manifest.sources || []).map((s) => `${s.adapter}(${s.conversations})`).join(', ')}`);
   return lines.join('\n');

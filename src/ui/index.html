@@ -107,6 +107,11 @@
                 <input type="checkbox" id="export-encrypt" />
                 <em>AES-256-GCM，换机时需输入密码</em>
               </label>
+              <label class="field switch-field">
+                <span>包含项目文件</span>
+                <input type="checkbox" id="export-projects" />
+                <em>打包会话引用的项目；自动排除 .git、依赖目录和凭据</em>
+              </label>
               <label class="field" id="password-field" style="display: none">
                 <span>密码</span>
                 <input id="export-password" type="password" placeholder="至少 8 位，建议 12 位以上" />
@@ -159,6 +164,10 @@
               <label class="field">
                 <span>项目目录（可选）</span>
                 <input id="import-workspace" type="text" placeholder="留空 = 沿用原路径；不存在则落到当前目录" />
+              </label>
+              <label class="field">
+                <span>恢复项目文件到（可选）</span>
+                <input id="import-projects" type="text" placeholder="例如：D:\\Projects\\Ferry-restore；不会覆盖已有目录" />
               </label>
               <label class="field wide">
                 <span>路径映射（每行一条，旧路径=新路径）</span>

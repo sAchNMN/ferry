@@ -17,6 +17,7 @@ import { renderMarkdown } from './core/ucm.js';
 import { listBackups, rollback } from './core/backup.js';
 import { loadConfig, saveConfig, backupsDir } from './core/env.js';
 import { VERSION, createLogger, ensureDir, exists, formatBytes, nowIso, uid } from './core/util.js';
+import { collectProjectSnapshots, planProjectRestore, restoreProjectSnapshots } from './core/projects.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UI_DIR = path.join(__dirname, 'ui');
@@ -131,12 +132,14 @@ export async function startServer({ env, port = 7099, log = createLogger() }) {
         if (!collected.conversations.length) {
           return sendJson(res, 400, { error: '所选范围没有会话', hint: '先扫描，或放宽时间范围。' });
         }
+        const projectSnapshot = opts.projects ? await collectProjectSnapshots(collected.conversations) : { projects: [], warnings: [], excludedFiles: 0 };
         const file = path.join(exportDir, `ferry-${stamp()}-${uid().slice(0, 6)}.ferrypack`);
         const written = await writePack(file, {
           conversations: collected.conversations,
           blobs: collected.blobs,
+          projects: projectSnapshot.projects,
           password,
-          meta: { label: opts.label || undefined },
+          meta: { label: opts.label || undefined, notes: projectSnapshot.warnings },
         });
         const sum = summarizeExport(collected.conversations, collected.blobs);
         return sendJson(res, 200, {
@@ -145,6 +148,9 @@ export async function startServer({ env, port = 7099, log = createLogger() }) {
           summary: sum,
           stats: written.manifest.stats,
           errors: collected.errors,
+          projectWarnings: projectSnapshot.warnings,
+          projectExcluded: projectSnapshot.excludedFiles,
+          projects: projectSnapshot.projects.map((p) => ({ id: p.id, name: p.name, originalPath: p.originalPath, files: p.files.length, bytes: p.files.reduce((a, f) => a + f.bytes, 0) })),
           conversations: collected.conversations.map((c) => ({
             id: c.id,
             title: c.title,
@@ -203,6 +209,13 @@ export async function startServer({ env, port = 7099, log = createLogger() }) {
             workspace: c.workspace?.cwd || null,
             updatedAt: c.updatedAt,
           })),
+          projects: (pack.projects || []).map((p) => ({
+            id: p.id,
+            name: p.name,
+            originalPath: p.originalPath,
+            files: p.files?.length || 0,
+            bytes: p.bytes || 0,
+          })),
         });
       }
 
@@ -230,10 +243,18 @@ export async function startServer({ env, port = 7099, log = createLogger() }) {
         if (!target.capabilities.import) {
           return sendJson(res, 400, { error: `${target.name} 不支持原生导入`, hint: '请选择其它目标，或使用"交接包"导出。' });
         }
+        if (opts.restoreProjects && !pack.projects?.length) {
+          return sendJson(res, 400, { error: '归档里没有项目文件', hint: '导出时勾选“包含项目文件”。' });
+        }
+        const projectPlan = opts.restoreProjects && pack.projects?.length
+          ? await planProjectRestore(pack.projects, conversations, opts.restoreProjects)
+          : null;
+        const mappings = [...(projectPlan?.mappings || []), ...compileMappings(opts.map || [])];
+        if (projectPlan && !opts.dryRun) await restoreProjectSnapshots(projectPlan);
         const result = await importConversations(env, conversations, {
           target: opts.target,
           workspace: opts.workspace || undefined,
-          map: compileMappings(opts.map || []),
+          map: mappings,
           into: opts.into || undefined,
           dryRun: Boolean(opts.dryRun),
           backup: opts.backup !== false,
@@ -244,6 +265,7 @@ export async function startServer({ env, port = 7099, log = createLogger() }) {
           target: target.id,
           backup: result.backup?.id || null,
           results: result.results,
+          projects: projectPlan ? projectPlan.projects.map((p) => ({ id: p.id, name: p.name, path: p.target, files: p.files.length })) : [],
           resumeHint: target.resumeHint?.(null, result.results.find((r) => r.resume)?.resume),
         });
       }

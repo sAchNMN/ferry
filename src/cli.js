@@ -28,6 +28,7 @@ import { renderHandoff, renderMarkdown } from './core/ucm.js';
 import { describeBackup, listBackups, rollback } from './core/backup.js';
 import { isEncrypted, passwordStrength } from './core/crypto.js';
 import { openDb } from './core/sqlite.js';
+import { collectProjectSnapshots, planProjectRestore, restoreProjectSnapshots } from './core/projects.js';
 
 const HELP = `
 ${color.bold('Ferry')} — 把 AI Agent 的对话历史从一台电脑摆渡到另一台 ${color.gray(`v${VERSION}`)}
@@ -71,6 +72,10 @@ ${color.bold('常用示例')}
 
   ${color.gray('# 7. 只导出自己参与过的对话（跳过 Codex 审批 / 子 Agent 自动运行）')}
   ferry export --all --exclude-internal -o mine.ferrypack
+  ferry export --all --projects -o bundle.ferrypack
+
+${color.bold('导出选项')}
+  --projects        导出会话引用的项目文件（默认排除 .git、依赖目录和凭据）
 
 ${color.bold('导入选项')}
   --to <agent>      目标 Agent（ferry targets 查看）
@@ -79,6 +84,7 @@ ${color.bold('导入选项')}
   --dry-run         只预演，不写盘
   --force           忽略导入台账，强制重导
   --no-backup       跳过导入前的自动备份（不推荐）
+  --restore-projects <目录>  把归档里的项目文件恢复到该目录，不覆盖已有文件
 
 ${color.bold('通用选项')}
   --json           机器可读输出
@@ -93,7 +99,7 @@ export async function main(argv) {
   const cmd = argv[0];
   const args = parseArgs(argv.slice(1), {
     repeat: ['agent', 'id', 'map', 'exclude'],
-    booleans: ['json', 'yes', 'quiet', 'help', 'version', 'all', 'dry-run', 'force', 'encrypt', 'redact', 'open', 'verify', 'verbose', 'exclude-internal'],
+    booleans: ['json', 'yes', 'quiet', 'help', 'version', 'all', 'dry-run', 'force', 'encrypt', 'redact', 'open', 'verify', 'verbose', 'exclude-internal', 'projects'],
   });
 
   if (args.version || argv[0] === 'version' || argv[0] === '--version' || argv[0] === '-v') {
@@ -277,9 +283,12 @@ async function cmdExport({ env, log, args }) {
     return;
   }
 
+  const projectSnapshot = args.projects ? await collectProjectSnapshots(collected.conversations) : { projects: [], warnings: [], excludedFiles: 0 };
+  for (const warning of projectSnapshot.warnings) log.warn(warning);
   const res = await writePack(outFile, {
     conversations: collected.conversations,
     blobs: collected.blobs,
+    projects: projectSnapshot.projects,
     password,
     meta: { label: args.label, notes: collected.errors.map((e) => `${e.adapter}: ${e.error}`) },
   });
@@ -333,18 +342,53 @@ async function cmdImport({ env, log, args }) {
   const conversations = load.flatMap((l) => l.pack.conversations);
   const blobs = new Map();
   for (const l of load) for (const [k, v] of l.pack.blobs || []) blobs.set(k, v);
+  const projects = load.flatMap((l) => l.pack.projects || []);
+  let projectPlan = null;
+  if (args['restore-projects']) {
+    if (!projects.length) throw err('归档里没有项目文件', '导出时请加 --projects。');
+    projectPlan = await planProjectRestore(projects, conversations, args['restore-projects']);
+  }
 
   if (args.list) {
     printConversationList(conversations);
     return;
   }
-  if (!target) {
+  if (!target && !projectPlan) {
     printConversationList(conversations);
     output.write(`\n  ${color.yellow('未指定 --to 目标。')} 选择：${allStores()
       .filter((s) => s.capabilities.import)
       .map((s) => s.id)
       .join(', ')}，或 ${color.bold('--to handoff')} 生成交接包。\n\n`);
     process.exitCode = 1;
+    return;
+  }
+
+  const projectMappings = projectPlan?.mappings || [];
+  const userMappings = compileMappings(splitList(args.map));
+  const mappings = [...projectMappings, ...userMappings];
+  if (projectPlan) {
+    output.write(`\n  ${color.bold('项目恢复计划')}\n`);
+    output.write(`    目标目录  ${args['restore-projects']}\n`);
+    output.write(`    项目      ${projectPlan.projects.length} 个\n`);
+    output.write(`    文件      ${projectPlan.projects.reduce((sum, p) => sum + (p.files?.length || 0), 0)} 个\n`);
+  }
+
+  if (!target) {
+    if (projectPlan) {
+      if (args['dry-run']) {
+        log.step('模拟恢复项目文件（不会改动任何文件）');
+      } else if (!args.yes) {
+        const ok = await confirm('确认恢复项目文件？(y/N) ');
+        if (!ok) {
+          log.warn('已取消');
+          return;
+        }
+      }
+      if (!args['dry-run']) {
+        const restored = await restoreProjectSnapshots(projectPlan);
+        log.success(`已恢复 ${restored.length} 个项目目录 → ${args['restore-projects']}`);
+      }
+    }
     return;
   }
 
@@ -379,17 +423,22 @@ async function cmdImport({ env, log, args }) {
   if (args['dry-run']) {
     log.step('模拟写入（不会改动任何文件）');
   } else if (!args.yes) {
-    const ok = await confirm('确认写入目标 Agent 的本地存储？(y/N) ');
+    const ok = await confirm(projectPlan ? '确认恢复项目文件并写入目标 Agent？(y/N) ' : '确认写入目标 Agent 的本地存储？(y/N) ');
     if (!ok) {
       log.warn('已取消');
       return;
     }
   }
 
+  if (projectPlan && !args['dry-run']) {
+    const restored = await restoreProjectSnapshots(projectPlan);
+    log.success(`已恢复 ${restored.length} 个项目目录 → ${args['restore-projects']}`);
+  }
+
   const res = await importConversations(env, conversations, {
     target,
     workspace: args.workspace,
-    map: compileMappings(splitList(args.map)),
+    map: mappings,
     into: args.into,
     dryRun: Boolean(args['dry-run']),
     force: Boolean(args.force),
@@ -655,7 +704,7 @@ async function resolvePassword(args, { create = false } = {}) {
   if (args.password === false) return null;
   if (typeof args.password === 'string') return args.password;
 
-  const need = create || Boolean(args.encrypt) || isEncryptedInput(args);
+  const need = create || Boolean(args.encrypt) || (await isEncryptedInput(args));
   if (create || need) {
     if (process.env.FERRY_PASSWORD) return process.env.FERRY_PASSWORD;
     if (process.stdin.isTTY) {
@@ -673,8 +722,28 @@ async function resolvePassword(args, { create = false } = {}) {
   return null;
 }
 
-function isEncryptedInput(args) {
-  return args._.some((f) => /\.ferrypack$/i.test(f));
+/**
+ * 只有真正的加密归档才需要密码。
+ *
+ * 以前这里只看扩展名，于是**任何** `.ferrypack` 都会弹出「归档密码：」，
+ * 明文归档的用户会以为文件坏了或者密码丢了。加密容器的魔数是 `FERRYENC1`。
+ */
+async function isEncryptedInput(args) {
+  for (const file of args._) {
+    if (!/\.ferrypack$/i.test(file)) continue;
+    let handle;
+    try {
+      handle = await fsp.open(file, 'r');
+      const head = Buffer.alloc(16);
+      const { bytesRead } = await handle.read(head, 0, 16, 0);
+      if (bytesRead > 9 && isEncrypted(head.subarray(0, bytesRead))) return true;
+    } catch {
+      /* 文件不存在/不可读交给后面的读取步骤报错，这里不抢先失败 */
+    } finally {
+      if (handle) await handle.close().catch(() => {});
+    }
+  }
+  return false;
 }
 
 async function promptHidden(prompt) {
@@ -796,7 +865,7 @@ function buildEnv(args) {
     localAppData,
     xdgConfig: appData,
     xdgData: localAppData,
-    ferryHome: args['ferry-home'] ? path.resolve(args['ferry-home']) : base.ferryHome,
+    ferryHome: args['ferry-home'] ? path.resolve(args['ferry-home']) : path.join(home, '.ferry'),
     cwd: args.cwd ? path.resolve(args.cwd) : base.cwd,
   });
 }

@@ -275,6 +275,7 @@ $('#btn-export').addEventListener('click', async () => {
         limit: Number($('#export-limit').value) || 0,
         label: $('#export-label').value || undefined,
         redact: $('#export-redact').checked,
+        projects: $('#export-projects').checked,
         password: encrypt ? password : undefined,
       },
     });
@@ -318,6 +319,9 @@ function renderExportResult(res, encrypted) {
     </div>
     <div class="callout" style="margin-top:14px">
       把文件拷到新电脑，打开 Ferry → 导入，选择目标 Agent。<br />
+      ${res.projects?.length ? `已包含 ${res.projects.length} 个项目；导入时可指定“恢复项目文件到”。<br />` : ''}
+      ${res.projectExcluded ? `为安全和体积考虑，已排除 ${res.projectExcluded} 个凭据、依赖目录或链接。<br />` : ''}
+      ${res.projectWarnings?.length ? `注意：${esc(res.projectWarnings.join('；'))}<br />` : ''}
       本机保存位置：<code>${esc(state.state.ferryHome)}\\exports</code>
     </div>`;
 }
@@ -401,7 +405,7 @@ $('#btn-unlock').addEventListener('click', async () => {
 function renderPack(pack) {
   const m = pack.manifest;
   $('#pack-panel').classList.remove('hidden');
-  $('#pack-count').textContent = `${pack.conversations.length} 个会话 · ${m.stats?.messages || 0} 条消息 · ${fmtBytes(m.stats?.archiveBytes || 0)}`;
+  $('#pack-count').textContent = `${pack.conversations.length} 个会话 · ${m.stats?.messages || 0} 条消息${pack.projects?.length ? ` · ${pack.projects.length} 个项目` : ''} · ${fmtBytes(m.stats?.archiveBytes || 0)}`;
   $('#conv-list').innerHTML = pack.conversations
     .map(
       (c) => `<div class="conv" data-id="${esc(c.id)}">
@@ -473,6 +477,7 @@ $('#btn-import').addEventListener('click', async () => {
         target,
         ids,
         workspace: $('#import-workspace').value.trim() || undefined,
+        restoreProjects: $('#import-projects').value.trim() || undefined,
         map: $('#import-map')
           .value.split(/\r?\n/)
           .map((s) => s.trim())
@@ -512,6 +517,7 @@ function renderImportResult(res, dryRun) {
       )
       .join('')}
     ${res.backup && !dryRun ? `<p class="muted small" style="margin-top:12px">已自动备份：<code>${esc(res.backup)}</code>，可在「归档」页回滚。</p>` : ''}
+    ${res.projects?.length ? `<div class="callout" style="margin-top:12px">${dryRun ? '将恢复' : '已恢复'} ${res.projects.length} 个项目目录：${res.projects.map((p) => `<code>${esc(p.path)}</code>`).join('、')}</div>` : ''}
     ${!dryRun ? `<div class="callout" style="margin-top:12px">${esc(res.resumeHint || '重启目标应用后，在历史列表里即可看到并继续。')}</div>` : ''}`;
   panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
