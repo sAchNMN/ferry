@@ -1,6 +1,6 @@
 /**
  * 打一个可移植包：dist/ferry-<version>.tar.gz
- * 目标机器只需要 Node.js >= 22.5，解压即可运行。
+ * 目标机器只需要 Node.js 22.15+（22.x）或 23.8+，解压即可运行。
  */
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
@@ -11,7 +11,7 @@ import { formatBytes } from '../src/core/util.js';
 
 const root = path.resolve(import.meta.dirname, '..');
 const pkg = JSON.parse(await fsp.readFile(path.join(root, 'package.json'), 'utf8'));
-const INCLUDE = ['bin', 'src', 'docs', 'README.md', 'LICENSE', 'package.json', 'start.cmd', 'start.sh'];
+const INCLUDE = ['assets', 'bin', 'src', 'docs', 'README.md', 'LICENSE', 'package.json', 'start.cmd', 'start.sh'];
 const SKIP_DIRS = new Set(['node_modules', '.git', '.tmp', 'dist', 'test']);
 
 async function collect(rel) {

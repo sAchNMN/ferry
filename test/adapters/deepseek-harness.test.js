@@ -8,6 +8,7 @@ import { rollback } from '../../src/core/backup.js';
 import { collectForExport, importConversations } from '../../src/core/migrate.js';
 import { getStore, scanStores } from '../../src/core/registry.js';
 import { block, createConversation } from '../../src/core/ucm.js';
+import { buildSessionLog } from '../../src/adapters/deepseek-harness-write.js';
 import { freshDir, makeEnv, seedDeepSeekHarness } from '../helpers.js';
 
 test('DeepSeek Harness：扫描并读取事件日志', async () => {
@@ -497,4 +498,58 @@ test('DeepSeek Harness：没有结果的工具调用整对跳过并记入 losses
     dryRun: true,
   });
   assert.ok(result.losses.some((loss) => loss.kind === 'tools'));
+});
+
+test('核心导入结果透传计划损失与状态摘要', async () => {
+  const home = await freshDir('dsh-loss-report');
+  const conv = createConversation({
+    title: '损失报告',
+    messages: [
+      { role: 'system', blocks: [block.text('系统提示')] },
+      { role: 'user', blocks: [block.text('跑一下')] },
+      { role: 'assistant', blocks: [block.toolCall('pwsh', { command: 'x' }, 'call-x')] },
+    ],
+  });
+
+  const result = await importConversations(makeEnv(home), [conv], {
+    target: 'deepseek-harness',
+    workspace: 'C:\\work\\loss-report',
+    backup: false,
+    dryRun: true,
+  });
+  const entry = result.results[0];
+
+  assert.equal(entry.error, null);
+  assert.equal(entry.fidelity, 'declared');
+  assert.equal(entry.stateDigest.length, 64);
+  assert.ok(entry.losses.some((loss) => loss.kind === 'tools'));
+  assert.equal(result.losses.length, entry.losses.length);
+});
+
+/**
+ * 真实 Codex 会话会把并行工具调用拆成连续多条 assistant 消息，结果统一跟在后面：
+ *   assistant(tool_call A) / assistant(tool_call B) / tool(result A) / tool(result B)
+ * 如果按“每条 assistant 只看紧跟的 tool”配对，A 会被误判成没有结果而整对丢掉。
+ */
+test('DeepSeek Harness：并行调用拆成多条 assistant 消息时仍能完整配对', () => {
+  const conv = createConversation({
+    title: '并行工具调用',
+    workspace: { cwd: 'C:\\work\\parallel' },
+    messages: [
+      { role: 'user', blocks: [block.text('并行跑两个命令')] },
+      { role: 'assistant', blocks: [block.toolCall('Bash', { command: 'a' }, 'call-a')] },
+      { role: 'assistant', blocks: [block.toolCall('Read', { file: 'b' }, 'call-b')] },
+      { role: 'tool', blocks: [block.toolResult('call-a', 'A')] },
+      { role: 'tool', blocks: [block.toolResult('call-b', 'B')] },
+      { role: 'assistant', blocks: [block.text('都完成了')] },
+    ],
+  });
+
+  const session = buildSessionLog(conv, { cwd: 'C:\\work\\parallel' });
+  assert.deepEqual(session.losses, []);
+  assert.equal(session.events.filter((event) => event.type === 'tool/call').length, 2);
+  assert.equal(session.events.filter((event) => event.type === 'tool/result').length, 2);
+
+  const content = session.events.find((event) => event.type === 'assistant/message').data.message.content;
+  assert.deepEqual(content.filter((item) => item.type === 'tool-call').map((item) => item.id), ['call-a', 'call-b']);
 });

@@ -143,3 +143,16 @@ test('normalizeMap 与 compileMappings 一致', () => {
   const rules = ['C:\\a=/b'];
   assert.deepEqual(normalizeMap(rules), compileMappings(rules));
 });
+
+
+test('映射：先消解点段，再判断工作区归属', () => {
+  const maps = compileMappings([String.raw`C:\work\demo=/target`]);
+  assert.equal(mapPath(String.raw`C:\work\other\..\demo\src`, maps), '/target/src');
+  assert.equal(mapPath(String.raw`C:\work\demo\..\other`, maps), String.raw`C:\work\demo\..\other`);
+});
+
+test('映射：Windows 扩展长度路径与普通盘符和 UNC 路径等价', () => {
+  assert.equal(normalizePath(String.raw`\\?\C:\work\demo`), 'C:/work/demo');
+  assert.equal(normalizePath(String.raw`\\?\UNC\server\share\demo`), '//server/share/demo');
+  assert.equal(mapPath(String.raw`\\?\C:\work\demo\src`, compileMappings([String.raw`C:\work\demo=/target`])), '/target/src');
+});

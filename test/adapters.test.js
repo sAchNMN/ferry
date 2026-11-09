@@ -343,3 +343,17 @@ test('归档：跨 Agent 打包后再导入', async () => {
   const scan = await scanStores(envB, { only: ['claude-code'] });
   assert.equal(scan.results[0].sessions.length, 2);
 });
+
+
+test('Claude Code 导入：等价 Windows 路径复用已有项目目录', async () => {
+  const home = await freshDir('claude-workspace-normalization');
+  const { file } = await seedClaude(home, 'C:\\work\\project');
+  const env = makeEnv(home);
+  const store = getStore('claude-code');
+  const [ref] = await store.scan(env);
+  const conv = await store.read(env, ref, { blobs: new Map() });
+  for (const workspace of ['C:\\work\\other\\..\\project', '\\\\?\\C:\\work\\project']) {
+    const plan = await store.import(env, conv, { workspace, dryRun: true });
+    assert.equal(path.dirname(plan.writes[0].path), path.dirname(file), workspace);
+  }
+});

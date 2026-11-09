@@ -4,6 +4,7 @@
  */
 import os from 'node:os';
 import path from 'node:path';
+import { toWsl } from './paths.js';
 import { existsSync } from './util.js';
 import { ensureDir, readJson, writeJson } from './util.js';
 
@@ -31,15 +32,33 @@ export function platformKey(p = process.platform) {
   return 'linux';
 }
 
+/** WSL 里 Node 看到的是 Linux，但 Agent 数据通常仍在 Windows 用户目录。 */
+export function detectWslWindowsProfile({ platform = process.platform, env = process.env, exists = existsSync } = {}) {
+  if (platform !== 'linux' || (!env.WSL_INTEROP && !env.WSL_DISTRO_NAME)) return null;
+
+  const home = env.USERPROFILE;
+  const appData = env.APPDATA;
+  const localAppData = env.LOCALAPPDATA;
+  if (!home || !appData || !localAppData) return null;
+
+  const resolve = (value) => path.posix.resolve(toWsl(value));
+  const resolved = { home: resolve(home), appData: resolve(appData), localAppData: resolve(localAppData) };
+  if (![resolved.home, resolved.appData, resolved.localAppData].every((p) => exists(p))) return null;
+  return { platform: 'win32', ...resolved };
+}
+
 export function createEnv(overrides = {}) {
-  const platform = overrides.platform || process.platform;
+  const detected = !overrides.home && !overrides.platform ? detectWslWindowsProfile() : null;
+  const platform = overrides.platform || detected?.platform || process.platform;
   const key = platformKey(platform);
-  const home = overrides.home || os.homedir();
+  const home = overrides.home || detected?.home || (key === 'win' ? process.env.USERPROFILE || os.homedir() : os.homedir());
   const appData =
     overrides.appData ||
+    detected?.appData ||
     (key === 'win' ? process.env.APPDATA || path.join(home, 'AppData', 'Roaming') : key === 'mac' ? path.join(home, 'Library', 'Application Support') : process.env.XDG_CONFIG_HOME || path.join(home, '.config'));
   const localAppData =
     overrides.localAppData ||
+    detected?.localAppData ||
     (key === 'win' ? process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local') : key === 'mac' ? path.join(home, 'Library', 'Application Support') : process.env.XDG_DATA_HOME || path.join(home, '.local', 'share'));
   const xdgConfig = overrides.xdgConfig || (key === 'win' ? appData : process.env.XDG_CONFIG_HOME || path.join(home, '.config'));
   const xdgData = overrides.xdgData || (key === 'win' ? localAppData : process.env.XDG_DATA_HOME || path.join(home, '.local', 'share'));

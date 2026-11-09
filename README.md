@@ -1,7 +1,7 @@
 # Ferry · AI 会话摆渡
 
 [![test](https://github.com/sAchNMN/ferry/actions/workflows/test.yml/badge.svg)](https://github.com/sAchNMN/ferry/actions/workflows/test.yml)
-[![node](https://img.shields.io/badge/node-%E2%89%A522.5-informational)](https://nodejs.org)
+[![node](https://img.shields.io/badge/node-22.15%2B%20%2F%2023.8%2B-informational)](https://nodejs.org)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 > 把 AI Agent 的对话历史，从一台电脑完整搬到另一台，并在目标 Agent 里**接着用**。
@@ -16,7 +16,7 @@ Ferry 是一个零依赖、跨平台（Windows / macOS / Linux）的本地工具
 换电脑 ◀── 原生写入 + 登记索引 + 自动备份 ◀── 解包 ───┘
 ```
 
-- **零安装**：只需要 Node.js ≥ 22.5，没有 npm 依赖，不联网。
+- **零安装**：只需要 Node.js 22.15+（22.x）或 23.8+，没有 npm 依赖，不联网。
 - **真·续聊**：不是导出成 Markdown 让你重开一段，而是写进目标 Agent 的原生存储。
   **WorkBuddy 已在真实应用里端到端验通**（导入 → 侧栏可见 → 点开发消息 → 拿到回复），
   其余平台请先看下面的「验证状态」。
@@ -58,6 +58,29 @@ node bin/ferry.js ui          # 打开 http://127.0.0.1:7099
 ```
 
 Windows 也可以直接双击 `start.cmd`；macOS / Linux 用 `./start.sh`。
+
+### 免安装 exe（绿色版）
+
+不想在目标电脑上装 Node，可以打一个单文件 exe：
+
+```bash
+node scripts/build-exe.mjs        # 产出 dist/Ferry.exe（约 90 MB）
+```
+
+双击 = 打开界面（等价于 `ui --open`）；带参数 = 当命令行用：
+
+```bash
+Ferry.exe scan
+Ferry.exe import demo.ferrypack --to codex --dry-run
+```
+
+目标机器**不需要安装 Node**：exe 里带的是完整运行时，启动时把内置的源码释放到
+`%TEMP%\ferry-<构建指纹>\`（临时目录不可写时依次退到 `%LOCALAPPDATA%\Ferry\runtime\`
+和 exe 同目录的 `.ferry-runtime\`），再从那里加载。体积大是因为整份 Node 运行时都在里面；
+exe 未签名，从网上/聊天工具传过去后首次运行可能被 SmartScreen 拦一下（更多信息 → 仍要运行）。
+
+exe 需要能写自己的数据目录（默认 `~/.ferry`）。放在项目目录、只读盘或沙箱目录里时，
+启动会直接报「数据目录不可写」并提示换位置；也可以 `Ferry.exe ui --ferry-home D:\FerryData`。
 
 ---
 
@@ -181,6 +204,30 @@ Ferry 在导入时会做三件事：
 也可以 `--into D:\projects` 自动落到同名目录下。**只映射元数据，不改写消息里的历史路径**——
 这是有意的：改了会让对话内容失真。
 
+### 项目快照的排除规则
+
+项目文件默认不打包版本控制目录（`.git` / `.hg` / `.svn`）、依赖目录（`node_modules`、`.venv` 等）、
+语言与构建缓存（`.tmp`、`__pycache__`、`.next`、`coverage` 等），以及 `.env`、私钥等凭据。
+`dist/`、`build/`、`target/` 这类可能装着交付物的目录**不在**默认名单里，需要时自己排——
+依赖和缓存是"删了会重装"，交付物是"删了会丢"，两者不该由工具替你决定。
+
+要按项目细化，在项目根放一个 `.ferryignore`（语法是 `.gitignore` 的子集）：
+
+```
+# 构建产物
+dist/
+build/
+# 任意层级的日志
+*.log
+!keep.log
+```
+
+也可以一次性追加：`ferry export --all --projects --exclude-path "dist/" --exclude-path "*.log"`；
+或在界面勾选"包含项目文件"后填"额外排除"（逗号分隔）。写进 `~/.ferry/config.json` 的
+`excludePaths` 数组则对所有导出生效。
+
+被排除的目录不会被进入，所以不能用 `!` 把已排除目录里的文件捞回来（与 git 一致）。
+
 ---
 
 ## 安全
@@ -203,6 +250,7 @@ ferry scan                         扫描本机 Agent 与会话
 ferry targets                      支持矩阵（导出 / 原生导入 / 续聊）
 ferry export --all -o x.ferrypack  导出全部
 ferry export --all --projects -o bundle.ferrypack  会话 + 项目文件
+ferry export --all --projects --exclude-path "dist/" -o bundle.ferrypack  再排除一类路径（可重复）
 ferry export --agent codex --since 7d --encrypt
 ferry export --agent chatgpt-export --to handoff -o ./handoff
 ferry import x.ferrypack --to codex [--workspace DIR] [--map OLD=NEW] [--restore-projects DIR] [--dry-run]
@@ -236,10 +284,10 @@ ferry import recent.ferrypack --to claude-code --workspace D:\work\proj
 `ferry ui` 启动后：
 
 - **总览**：本机装了哪些 Agent、多少会话、最近活动；点卡片直接进入导出。
-- **导出**：勾选 Agent、时间范围、脱敏、加密与“包含项目文件”，生成并下载 `.ferrypack`。
+- **导出**：勾选 Agent、时间范围、脱敏、加密与“包含项目文件”，查看实时打包进度并生成 `.ferrypack`；可打开所在文件夹，也可在历史列表中确认删除导出包。
 - **导入**：拖入文件 → 浏览会话 → 预览 Markdown → 选目标 Agent、项目目录和项目恢复目录 → 预演/导入。
 - **归档**：查看自动备份并回滚。
-- **设置**：运行环境与能力矩阵。
+- **设置**：运行环境与能力矩阵；可查看并清理上传临时文件，保留导出包、原始会话、自动备份、配置及导入记录。
 
 界面与 CLI 共用同一套核心逻辑，不存在"只有界面能用"的功能。
 
@@ -264,6 +312,7 @@ ferry import recent.ferrypack --to claude-code --workspace D:\work\proj
 npm test          # 161 个测试：tar/zip/crypto/归档/脱敏/路径映射/幂等/适配器往返
 node bin/ferry.js doctor
 npm run package   # 生成 dist/ferry-<version>.tar.gz（可直接拷到别的机器）
+npm run exe       # 生成 dist/Ferry.exe（绿色单文件 exe）
 ```
 
 目录：
@@ -276,6 +325,8 @@ src/ui/                前端（原生 JS，无构建）
 src/core/              ucm / archive / tar / zip / crypto / registry / migrate / backup
 src/adapters/          每个 Agent 一个文件
 src/core/adapter.js    适配器协议
+assets/ferry.ico       应用图标（16–256 多尺寸）
+assets/ferry-icon.svg  图标矢量源
 docs/                  格式规范、适配器开发、云端迁移指南
 test/                  测试与 fixture
 ```

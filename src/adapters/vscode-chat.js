@@ -13,6 +13,7 @@
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { defineStore } from '../core/adapter.js';
+import { decodeFileUri } from '../core/file-url.js';
 import { ensureDir, exists, existsSync, uid } from '../core/util.js';
 import {
   buildSessionState,
@@ -151,18 +152,6 @@ async function readJson(file) {
   } catch {
     return null;
   }
-}
-
-function decodeFileUri(uri, platform = process.platform) {
-  if (!uri || typeof uri !== 'string' || !uri.startsWith('file://')) return '';
-  let s = uri.slice('file://'.length);
-  try {
-    s = decodeURIComponent(s);
-  } catch {
-    /* keep */
-  }
-  s = s.replace(/^\/([a-zA-Z]):/, '$1:');
-  return platform === 'win32' ? s.replace(/\//g, '\\') : s;
 }
 
 /* ------------------------------------------------------------------ */

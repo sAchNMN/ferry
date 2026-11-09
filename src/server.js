@@ -16,28 +16,90 @@ import { readPack, writePack } from './core/archive.js';
 import { renderMarkdown } from './core/ucm.js';
 import { listBackups, rollback } from './core/backup.js';
 import { loadConfig, saveConfig, backupsDir } from './core/env.js';
-import { VERSION, createLogger, ensureDir, exists, formatBytes, nowIso, uid } from './core/util.js';
+import { VERSION, createLogger, ensureDir, formatBytes, nowIso, uid } from './core/util.js';
 import { collectProjectSnapshots, planProjectRestore, restoreProjectSnapshots } from './core/projects.js';
+import { openFolder as defaultOpenFolder } from './core/open-folder.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UI_DIR = path.join(__dirname, 'ui');
+const ICON_DIR = path.join(__dirname, '..', 'assets');
 const MAX_UPLOAD = 2 * 1024 * 1024 * 1024;
 
-export async function startServer({ env, port = 7099, log = createLogger() }) {
+/** 把 EPERM/EACCES 这类系统错误换成用户能照着做的说明。 */
+function describeFsError(err) {
+  if (!err || !['EPERM', 'EACCES', 'EROFS'].includes(err.code)) return err;
+  const where = err.path ? ` ${err.path}` : '';
+  const wrapped = new Error(
+    `没有权限写入${where}（${err.code}）。如果 Ferry 放在项目目录、只读盘或受限目录里，请换到桌面等普通文件夹再运行；也检查安全软件是否拦截了它。`,
+  );
+  wrapped.statusCode = 500;
+  return wrapped;
+}
+
+export async function startServer({ env, port = 7099, log = createLogger(), openFolder = defaultOpenFolder }) {
   const token = crypto.randomBytes(24).toString('base64url');
   const uploads = new Map();
+  const pendingExports = new Set();
+  let activePosts = 0;
+  let clearingCache = false;
   const uploadDir = path.join(env.ferryHome, 'uploads');
   const exportDir = path.join(env.ferryHome, 'exports');
   await ensureDir(uploadDir);
   await ensureDir(exportDir);
 
   const server = http.createServer((req, res) => {
+    if (req.method === 'POST') activePosts++;
     handle(req, res).catch((err) => {
-      log.error(`${req.method} ${req.url} → ${err.message}`);
-      if (!res.headersSent) sendJson(res, 500, { error: err.message, hint: err.hint });
-      else res.end();
+      const shown = describeFsError(err);
+      log.error(`${req.method} ${req.url} → ${shown.message}`);
+      if (!res.headersSent) sendJson(res, shown.statusCode || 500, { error: shown.message, hint: shown.hint });
+      else if (res.getHeader('content-type') === 'application/x-ndjson') {
+        res.end(JSON.stringify({ type: 'error', error: shown.message, hint: shown.hint }) + '\n');
+      } else res.end();
+    }).finally(() => {
+      if (req.method === 'POST') activePosts--;
     });
   });
+
+  async function checkDirectory(directory) {
+    if ((await fsp.lstat(directory)).isSymbolicLink()) {
+      throw Object.assign(new Error('存储目录不能是符号链接'), { statusCode: 400 });
+    }
+    // Windows 的 junction 不会被 lstat 认成符号链接，只能比较真实路径。
+    // 只跟直接父目录比，避免把祖先目录上的合法重定向（如漫游配置）误判。
+    const parent = fs.realpathSync.native(path.dirname(directory));
+    const actual = fs.realpathSync.native(directory);
+    const expected = path.join(parent, path.basename(directory));
+    const same = process.platform === 'win32'
+      ? actual.toLowerCase() === expected.toLowerCase()
+      : actual === expected;
+    if (!same) throw Object.assign(new Error('存储目录不能是符号链接'), { statusCode: 400 });
+  }
+
+  async function managedFiles(directory) {
+    await checkDirectory(directory);
+    const items = [];
+    for (const entry of await fsp.readdir(directory, { withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      try {
+        const stat = await fsp.lstat(path.join(directory, entry.name));
+        if (stat.isFile()) items.push({ file: entry.name, bytes: stat.size, createdAt: stat.mtime.toISOString() });
+      } catch (err) {
+        if (err.code !== 'ENOENT') throw err;
+      }
+    }
+    return items;
+  }
+
+  async function exportFile(name) {
+    if (typeof name !== 'string' || /[\\/:]/.test(name) || !name.endsWith('.ferrypack')) {
+      throw Object.assign(new Error('无效的导出包文件名'), { statusCode: 400 });
+    }
+    if (pendingExports.has(name)) throw Object.assign(new Error('导出包仍在写入，请稍后重试'), { statusCode: 409 });
+    const items = await managedFiles(exportDir);
+    if (!items.some((item) => item.file === name)) throw Object.assign(new Error('导出包不存在或已删除'), { statusCode: 404 });
+    return path.join(exportDir, name);
+  }
 
   async function handle(req, res) {
     const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
@@ -56,8 +118,28 @@ export async function startServer({ env, port = 7099, log = createLogger() }) {
       fs.createReadStream(file).pipe(res);
       return;
     }
-    if (pathname === '/favicon.ico') {
-      res.writeHead(204).end();
+    if (pathname === '/favicon.ico' || pathname === '/assets/ferry.ico') {
+      const iconFile = path.join(ICON_DIR, 'ferry.ico');
+      try {
+        await fsp.access(iconFile);
+      } catch {
+        res.writeHead(204).end();
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'image/x-icon', 'cache-control': 'public, max-age=86400' });
+      fs.createReadStream(iconFile).pipe(res);
+      return;
+    }
+    if (pathname === '/assets/ferry-icon.png') {
+      const iconFile = path.join(ICON_DIR, 'ferry-icon.png');
+      try {
+        await fsp.access(iconFile);
+      } catch {
+        res.writeHead(404).end();
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'public, max-age=86400' });
+      fs.createReadStream(iconFile).pipe(res);
       return;
     }
 
@@ -74,6 +156,7 @@ export async function startServer({ env, port = 7099, log = createLogger() }) {
     }
 
     const method = req.method.toUpperCase();
+    if (method === 'POST' && clearingCache) return sendJson(res, 409, { error: '正在清理缓存，请稍后重试' });
     const body = method === 'POST' ? await readBody(req) : null;
     const json = () => (body ? JSON.parse(body.toString('utf8') || '{}') : {});
 
@@ -122,34 +205,62 @@ export async function startServer({ env, port = 7099, log = createLogger() }) {
         const opts = json();
         const agents = Array.isArray(opts.agents) ? opts.agents : [];
         const password = opts.password || undefined;
+        const streaming = req.headers.accept === 'application/x-ndjson';
+        const progress = (data) => {
+          if (streaming && !res.destroyed) res.write(JSON.stringify({ type: 'progress', ...data }) + '\n');
+        };
+        if (streaming) {
+          res.setHeader('content-type', 'application/x-ndjson');
+          res.writeHead(200, { 'cache-control': 'no-store' });
+          res.flushHeaders();
+        }
+        progress({ message: '正在扫描所选 Agent…' });
         const collected = await collectForExport(env, {
           agents,
           since: opts.since,
           limit: Number(opts.limit) || 0,
           redact: opts.redact !== false,
+          onProgress: ({ done, total }) => progress({ message: `正在读取会话 ${done} / ${total}`, done, total }),
           log,
         });
         if (!collected.conversations.length) {
-          return sendJson(res, 400, { error: '所选范围没有会话', hint: '先扫描，或放宽时间范围。' });
+          throw Object.assign(new Error('所选范围没有会话，请先扫描或放宽时间范围。'), { statusCode: 400 });
         }
-        const projectSnapshot = opts.projects ? await collectProjectSnapshots(collected.conversations) : { projects: [], warnings: [], excludedFiles: 0 };
+        progress({ message: opts.projects ? '正在收集项目文件…' : '正在准备归档…' });
+        const projectSnapshot = opts.projects
+          ? await collectProjectSnapshots(collected.conversations, { excludes: await exportExcludes(env, opts) })
+          : { projects: [], warnings: [], excludedFiles: 0, failedProjects: [], report: null };
         const file = path.join(exportDir, `ferry-${stamp()}-${uid().slice(0, 6)}.ferrypack`);
-        const written = await writePack(file, {
-          conversations: collected.conversations,
-          blobs: collected.blobs,
-          projects: projectSnapshot.projects,
-          password,
-          meta: { label: opts.label || undefined, notes: projectSnapshot.warnings },
-        });
+        await checkDirectory(exportDir);
+        pendingExports.add(path.basename(file));
+        let written;
+        try {
+          written = await writePack(file, {
+            conversations: collected.conversations,
+            blobs: collected.blobs,
+            projects: projectSnapshot.projects,
+            password,
+            onProgress: progress,
+            meta: { label: opts.label || undefined, notes: projectSnapshot.warnings, projectReport: projectSnapshot.report },
+          });
+        } catch (err) {
+          await fsp.unlink(file).catch(() => {});
+          throw err;
+        } finally {
+          pendingExports.delete(path.basename(file));
+        }
         const sum = summarizeExport(collected.conversations, collected.blobs);
-        return sendJson(res, 200, {
+        const result = {
           file: path.basename(file),
+          directory: exportDir,
           bytes: written.bytes,
           summary: sum,
           stats: written.manifest.stats,
           errors: collected.errors,
           projectWarnings: projectSnapshot.warnings,
           projectExcluded: projectSnapshot.excludedFiles,
+          projectReport: projectSnapshot.report,
+          projectFailures: projectSnapshot.failedProjects,
           projects: projectSnapshot.projects.map((p) => ({ id: p.id, name: p.name, originalPath: p.originalPath, files: p.files.length, bytes: p.files.reduce((a, f) => a + f.bytes, 0) })),
           conversations: collected.conversations.map((c) => ({
             id: c.id,
@@ -157,23 +268,50 @@ export async function startServer({ env, port = 7099, log = createLogger() }) {
             source: c.source.name,
             messages: c.stats.messages,
           })),
-        });
+        };
+        if (streaming) return res.end(JSON.stringify({ type: 'result', result }) + '\n');
+        return sendJson(res, 200, result);
       }
 
-      case 'GET /api/download': {
-        const name = path.basename(url.searchParams.get('file') || '');
-        const file = path.join(exportDir, name);
-        if (!(await exists(file))) return sendJson(res, 404, { error: '文件不存在' });
-        res.writeHead(200, {
-          'content-type': 'application/octet-stream',
-          'content-disposition': `attachment; filename="${encodeURIComponent(name)}"`,
-          'content-length': (await fsp.stat(file)).size,
-        });
-        fs.createReadStream(file).pipe(res);
-        return;
+      case 'GET /api/exports': {
+        const items = (await managedFiles(exportDir))
+          .filter((item) => item.file.endsWith('.ferrypack') && !pendingExports.has(item.file))
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+        return sendJson(res, 200, { dir: exportDir, items });
+      }
+
+      case 'POST /api/exports/open': {
+        const file = await exportFile(json().file);
+        await openFolder(path.dirname(file));
+        return sendJson(res, 200, { dir: exportDir });
+      }
+
+      case 'POST /api/exports/delete': {
+        const file = await exportFile(json().file);
+        await fsp.unlink(file);
+        return sendJson(res, 200, { deleted: path.basename(file) });
+      }
+
+      case 'GET /api/cache': {
+        const files = await managedFiles(uploadDir);
+        return sendJson(res, 200, { files: files.length, bytes: files.reduce((n, f) => n + f.bytes, 0) });
+      }
+
+      case 'POST /api/cache/clear': {
+        if (activePosts > 1) return sendJson(res, 409, { error: '有导出、上传或导入等操作正在进行，请完成后再清理缓存' });
+        clearingCache = true;
+        try {
+          const files = await managedFiles(uploadDir);
+          for (const item of files) await fsp.unlink(path.join(uploadDir, item.file));
+          uploads.clear();
+          return sendJson(res, 200, { files: files.length, bytes: files.reduce((n, f) => n + f.bytes, 0) });
+        } finally {
+          clearingCache = false;
+        }
       }
 
       case 'POST /api/upload': {
+        await checkDirectory(uploadDir);
         if (!body) return sendJson(res, 400, { error: '空文件' });
         const name = String(url.searchParams.get('name') || 'upload.bin').replace(/[^\w.\-\u4e00-\u9fa5 ]+/g, '_');
         const t = uid().replace(/-/g, '').slice(0, 16);
@@ -264,6 +402,7 @@ export async function startServer({ env, port = 7099, log = createLogger() }) {
         return sendJson(res, 200, {
           target: target.id,
           backup: result.backup?.id || null,
+          losses: result.losses || [],
           results: result.results,
           projects: projectPlan ? projectPlan.projects.map((p) => ({ id: p.id, name: p.name, path: p.target, files: p.files.length })) : [],
           resumeHint: target.resumeHint?.(null, result.results.find((r) => r.resume)?.resume),
@@ -353,4 +492,17 @@ function stamp() {
   const d = new Date();
   const p = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+/** 项目快照的追加排除：config.json 的 excludePaths + 导出请求里的 excludePaths。 */
+async function exportExcludes(env, opts = {}) {
+  let config = {};
+  try {
+    config = await loadConfig(env);
+  } catch {
+    // 配置损坏不该挡住导出：只用请求里带的规则。
+  }
+  const fromConfig = Array.isArray(config.excludePaths) ? config.excludePaths : [];
+  const fromRequest = Array.isArray(opts.excludePaths) ? opts.excludePaths : [];
+  return [...fromConfig, ...fromRequest].filter((rule) => typeof rule === 'string' && rule.trim());
 }

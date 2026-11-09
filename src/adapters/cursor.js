@@ -12,6 +12,7 @@
  */
 import path from 'node:path';
 import { defineStore } from '../core/adapter.js';
+import { decodeFileUri, encodeFileUri } from '../core/file-url.js';
 import { block, createConversation } from '../core/ucm.js';
 import { closeQuietly, openDb, tableExists } from '../core/sqlite.js';
 import { exists, existsSync, isoFrom, uid } from '../core/util.js';
@@ -49,7 +50,7 @@ export default defineStore({
             path: `${dbFile}#${id}`,
             createdAt: isoFrom(data.createdAt || data.created_at),
             updatedAt: isoFrom(data.lastUpdatedAt || data.updatedAt),
-            workspace: cursorWorkspace(data),
+            workspace: cursorWorkspace(data, env.platform),
             messages: Array.isArray(conv) ? conv.length : 0,
             bytes: Buffer.byteLength(JSON.stringify(data)),
             meta: { host, dbFile, composerId: id },
@@ -97,7 +98,7 @@ export default defineStore({
           sessionId: composerId,
           path: dbFile,
         },
-        workspace: { cwd: cursorWorkspace(data) },
+        workspace: { cwd: cursorWorkspace(data, env.platform) },
         model: data.modelConfig?.modelName ? { id: data.modelConfig.modelName } : undefined,
         messages,
       });
@@ -160,7 +161,7 @@ export default defineStore({
       lastUpdatedAt: now,
       conversation: items,
       status: 'completed',
-      context: { folder: { uri: `file://${cwd.replace(/\\/g, '/')}` } },
+      context: { folder: { uri: encodeFileUri(cwd, env.platform) } },
       modelConfig: { modelName: conv.model?.id || 'auto' },
       unifiedMode: 'agent',
       isAgentic: true,
@@ -236,15 +237,10 @@ function parseJson(value) {
   }
 }
 
-function cursorWorkspace(data) {
+function cursorWorkspace(data, platform = process.platform) {
   const folder = data?.context?.folder?.uri || data?.workspaceIdentifier?.uri || data?.context?.repository;
   if (!folder) return undefined;
-  try {
-    const s = decodeURIComponent(String(folder).replace(/^file:\/\//, ''));
-    return s.replace(/^\/([a-zA-Z]):/, '$1:').replace(/\//g, '\\');
-  } catch {
-    return String(folder);
-  }
+  return decodeFileUri(String(folder), platform) || String(folder);
 }
 
 function bubbleToMessage(bubble) {

@@ -507,6 +507,9 @@ export async function importConversations(env, conversations, opts = {}) {
         workspace: previous.workspace || null,
         writes: [],
         notes: [`已导入过（${previous.at}），跳过；要强制重导请加 --force`],
+        losses: [],
+        fidelity: null,
+        stateDigest: null,
         resume: null,
         skipped: true,
         error: null,
@@ -531,6 +534,9 @@ export async function importConversations(env, conversations, opts = {}) {
           workspace: ws.cwd,
           writes: plan.writes,
           notes: [...notes, ...plan.notes],
+          losses: Array.isArray(plan.losses) ? plan.losses : [],
+          fidelity: plan.fidelity || null,
+          stateDigest: plan.stateDigest || null,
           resume: raw.resume,
           skipped: false,
           error: null,
@@ -556,6 +562,9 @@ export async function importConversations(env, conversations, opts = {}) {
         workspace: ws.cwd,
         writes: res.writes || [],
         notes: [...notes, ...(res.notes || [])],
+        losses: Array.isArray(res.losses) ? res.losses : [],
+        fidelity: res.fidelity || null,
+        stateDigest: res.stateDigest || null,
         resume: res.resume,
         skipped: false,
         error: null,
@@ -583,6 +592,9 @@ export async function importConversations(env, conversations, opts = {}) {
         workspace: ws.cwd,
         writes: [],
         notes,
+        losses: [],
+        fidelity: null,
+        stateDigest: null,
         resume: null,
         skipped: false,
         error: err.message,
@@ -611,7 +623,12 @@ export async function importConversations(env, conversations, opts = {}) {
     backupInfo.manifest = manifest;
   }
 
-  return { results, backup: backupInfo, target: store };
+  return {
+    results,
+    losses: results.flatMap((r) => r.losses || []),
+    backup: backupInfo,
+    target: store,
+  };
 }
 
 /* ------------------------------------------------------------------ */

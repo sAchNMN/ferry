@@ -53,18 +53,18 @@ package.json
 | `session_meta` 字段对齐 | 补齐 `session_id` / `thread_source` / `history_mode` / `runtime_workspace_roots` / `base_instructions` / `context_window`，与真实文件**完全一致** |
 | 外层信封 | 补 `ordinal`（连续递增） |
 | `turn_context` | 补 `root_turn_id` / `workspace_roots` / `current_date` / `timezone` |
-| `response_item` | 补 `id` 与 `internal_chat_message_metadata_passthrough`（message / function_call / function_call_output） |
+| `response_item` | 补 `id` 与 `internal_chat_message_metadata_passthrough`（message / function_call / function_call_output / reasoning） |
 | dry-run 预览 | 原先只报 rollout，漏报 `session_index.jsonl`，用户按预览判断风险是错的；已补 |
 | 标题取词 | 跳过机器注入的 user 消息（AGENTS.md / environment_context / 审批提示等）与同样被污染的 `thread_name`；实测 112 个会话里 47 个曾把系统提示当标题，现为 **0** |
 | 内部会话标记 | 整段无真实用户消息的会话（实测 69/112，Codex 的审批/子 Agent 自动运行）标 `meta.internalSession`，标题显式写成「Codex 内部会话 xxxxxxxx」 |
+| 思考块写回 | UCM `thinking` 写成 `response_item` 的 `reasoning.summary`，并保留 `id` 与会话透传元数据；已用本机 `codex-cli 0.163.0-alpha.10.2` 解析验证 |
+| 备份范围声明 | `backupScope()` 覆盖 `session_index.jsonl` 与现有 `state_*.sqlite`，导入前可纳入统一备份/回滚 |
 
 ## 待做
 
 | 项 | 说明 |
 |---|---|
-| 导出时过滤内部会话 | `collectForExport` 目前丢掉 `ref.meta.internalSession`，需要 `--exclude-internal` |
 | `event_msg` / `world_state` / `token_usage_record` | 遥测与 UI 事件，评估是否影响 resume；倾向不写（真实文件里它们是运行时产物） |
-| `reasoning` 类 response_item | 我们目前不产出（thinking 块没写进去），`status` / `summary` / `encrypted_content` 属于这类条目 |
 
 ## 验收
 

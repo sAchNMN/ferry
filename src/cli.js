@@ -8,7 +8,7 @@ import readline from 'node:readline/promises';
 import { spawn } from 'node:child_process';
 import { stdin as input, stdout as output } from 'node:process';
 
-import { createEnv, backupsDir } from './core/env.js';
+import { createEnv, backupsDir, loadConfig } from './core/env.js';
 import {
   color,
   createLogger,
@@ -17,7 +17,11 @@ import {
   formatTime,
   parseArgs,
   plural,
+  probeWritableDir,
+  safeName,
   splitList,
+  supportsNodeVersion,
+  writeFileUnique,
   truncate,
   VERSION,
 } from './core/util.js';
@@ -76,6 +80,8 @@ ${color.bold('常用示例')}
 
 ${color.bold('导出选项')}
   --projects        导出会话引用的项目文件（默认排除 .git、依赖目录和凭据）
+  --exclude-path <glob>  项目快照里再排除一类路径，可重复，如 --exclude-path ".tmp/" --exclude-path "*.log"
+  ${color.gray('项目根的 .ferryignore 同样生效；不含 / 的规则匹配任意层级，! 开头表示取消排除。')}
 
 ${color.bold('导入选项')}
   --to <agent>      目标 Agent（ferry targets 查看）
@@ -98,7 +104,7 @@ ${color.bold('通用选项')}
 export async function main(argv) {
   const cmd = argv[0];
   const args = parseArgs(argv.slice(1), {
-    repeat: ['agent', 'id', 'map', 'exclude'],
+    repeat: ['agent', 'id', 'map', 'exclude', 'exclude-path'],
     booleans: ['json', 'yes', 'quiet', 'help', 'version', 'all', 'dry-run', 'force', 'encrypt', 'redact', 'open', 'verify', 'verbose', 'exclude-internal', 'projects'],
   });
 
@@ -229,6 +235,19 @@ function cap(v) {
 /* export                                                             */
 /* ------------------------------------------------------------------ */
 
+/** 项目快照的追加排除：config.json 的 excludePaths + CLI --exclude-path。 */
+async function projectExcludes(env, args) {
+  let config = {};
+  try {
+    config = await loadConfig(env);
+  } catch {
+    // 配置损坏不该挡住导出：只用命令行传入的规则。
+  }
+  const fromConfig = Array.isArray(config.excludePaths) ? config.excludePaths : [];
+  const fromArgs = Array.isArray(args['exclude-path']) ? args['exclude-path'] : [];
+  return [...fromConfig, ...fromArgs].filter((rule) => typeof rule === 'string' && rule.trim());
+}
+
 async function cmdExport({ env, log, args }) {
   const agents = splitList(args.agent);
   const asHandoff = args.to === 'handoff' || args.to === 'markdown' || args.to === 'md';
@@ -272,9 +291,9 @@ async function cmdExport({ env, log, args }) {
     await fsp.mkdir(outFile, { recursive: true });
     let n = 0;
     for (const conv of collected.conversations) {
-      const base = safeFileName(conv.title) || `session-${++n}`;
+      const base = safeFileName(conv.title) || `session-${n + 1}`;
       const body = args.to === 'markdown' || args.to === 'md' ? renderMarkdown(conv) : renderHandoff(conv);
-      await fsp.writeFile(path.join(outFile, `${base}.md`), body, 'utf8');
+      await writeFileUnique(path.join(outFile, `${base}.md`), body);
       n++;
     }
     log.success(`已生成 ${n} 份交接包 → ${outFile}`);
@@ -283,23 +302,36 @@ async function cmdExport({ env, log, args }) {
     return;
   }
 
-  const projectSnapshot = args.projects ? await collectProjectSnapshots(collected.conversations) : { projects: [], warnings: [], excludedFiles: 0 };
+  const projectSnapshot = args.projects
+    ? await collectProjectSnapshots(collected.conversations, { excludes: await projectExcludes(env, args) })
+    : { projects: [], warnings: [], excludedFiles: 0, failedProjects: [], report: null };
   for (const warning of projectSnapshot.warnings) log.warn(warning);
   const res = await writePack(outFile, {
     conversations: collected.conversations,
     blobs: collected.blobs,
     projects: projectSnapshot.projects,
     password,
-    meta: { label: args.label, notes: collected.errors.map((e) => `${e.adapter}: ${e.error}`) },
+    meta: {
+      label: args.label,
+      notes: collected.errors.map((e) => `${e.adapter}: ${e.error}`),
+      projectReport: projectSnapshot.report,
+    },
   });
 
   const sum = summarizeExport(collected.conversations, collected.blobs);
   if (args.json) {
-    output.write(JSON.stringify({ file: res.file, ...res.manifest.stats, manifest: res.manifest }, null, 2) + '\n');
+    output.write(JSON.stringify({ file: res.file, ...res.manifest.stats, projectReport: projectSnapshot.report, manifest: res.manifest }, null, 2) + '\n');
     return;
   }
   log.success(`已导出 ${sum.text}`);
   output.write(`\n  文件：${color.bold(outFile)}\n  体积：${formatBytes(res.bytes)}${password ? '  ' + color.yellow('（已加密）') : ''}\n`);
+  if (projectSnapshot.report) {
+    const report = projectSnapshot.report;
+    output.write(
+      `  项目快照：识别 ${report.workspaceCount} 个工作目录，成功打包 ${report.projectsPacked} 个项目、${report.projectFiles} 个文件（${formatBytes(report.projectBytes)}）；${report.sessionsWithoutWorkspace} 个会话没有工作区路径，排除 ${report.excludedFiles} 个条目。\n`,
+    );
+    if (report.failedProjects) output.write(`  项目读取失败：${report.failedProjects} 个\n`);
+  }
   if (collected.errors.length) {
     output.write(`\n  ${color.yellow('部分会话未能读取：')}\n`);
     for (const e of collected.errors.slice(0, 6)) output.write(`    · ${e.adapter}：${e.error}\n`);
@@ -397,8 +429,8 @@ async function cmdImport({ env, log, args }) {
     await fsp.mkdir(dir, { recursive: true });
     let n = 0;
     for (const conv of conversations) {
-      const name = safeFileName(conv.title) || `session-${++n}`;
-      await fsp.writeFile(path.join(dir, `${name}.md`), renderHandoff(conv), 'utf8');
+      const name = safeFileName(conv.title) || `session-${n + 1}`;
+      await writeFileUnique(path.join(dir, `${name}.md`), renderHandoff(conv));
       n++;
     }
     log.success(`已生成 ${n} 份交接包 → ${dir}`);
@@ -465,6 +497,11 @@ async function cmdImport({ env, log, args }) {
     output.write(`  ${mark} ${truncate(r.title, 44)} ${color.gray(`→ ${r.workspace || ''}`)}\n`);
     if (r.error) output.write(`      ${color.red(r.error)}\n`);
     for (const note of r.notes || []) output.write(`      ${color.gray(note)}\n`);
+    for (const loss of r.losses || []) {
+      const detail = typeof loss === 'string' ? loss : loss.detail || loss.kind || '未说明的迁移损失';
+      output.write(`      ${color.yellow(`损失/降级：${detail}`)}\n`);
+    }
+    if (r.fidelity) output.write(`      ${color.gray(`计划精度：${r.fidelity}`)}\n`);
   }
 
   output.write('\n');
@@ -550,11 +587,11 @@ async function cmdConvert({ args, rest }) {
   await fsp.mkdir(outDir, { recursive: true });
   let n = 0;
   for (const conv of convs) {
-    const name = safeFileName(conv.title) || `session-${++n}`;
+    const name = safeFileName(conv.title) || `session-${n + 1}`;
     const content =
       to === 'json' ? JSON.stringify(conv, null, 2) : to === 'handoff' ? renderHandoff(conv) : renderMarkdown(conv);
     const ext = to === 'json' ? '.json' : '.md';
-    await fsp.writeFile(path.join(outDir, `${name}${ext}`), content, 'utf8');
+    await writeFileUnique(path.join(outDir, `${name}${ext}`), content);
     n++;
   }
   output.write(`\n已转换 ${n} 个会话 → ${outDir}（格式：${to}）\n\n`);
@@ -616,8 +653,7 @@ async function cmdDoctor({ env, args, log }) {
   const checks = [];
   const add = (name, ok, detail, hint) => checks.push({ name, ok, detail, hint });
 
-  const [major, minor] = process.versions.node.split('.').map(Number);
-  add('Node.js 版本', major > 22 || (major === 22 && minor >= 5), process.version, '需要 >= 22.5（内置 node:sqlite）');
+  add('Node.js 版本', supportsNodeVersion(), process.version, '需要 Node.js 22.15+（22.x）或 23.8+');
 
   try {
     await openDb(':memory:', { readOnly: false });
@@ -679,6 +715,15 @@ async function cmdDoctor({ env, args, log }) {
 /* ------------------------------------------------------------------ */
 
 async function cmdUi({ env, args, log }) {
+  // 有些环境（只读盘、沙箱目录、安全软件）能读不能写，界面照常起来但导出/导入全失败。
+  // 与其让用户点一遍才发现，不如启动时就说清楚。
+  const writeError = await probeWritableDir(env.ferryHome);
+  if (writeError) {
+    throw err(
+      `数据目录不可写：${env.ferryHome}（${writeError.code || writeError.message}）`,
+      'Ferry 可能被放在了受限位置（项目目录、只读盘、沙箱目录），或这个 exe 被系统标记过。请把它复制到桌面、D 盘等普通文件夹再运行；如果是从别处剪切过来的，删掉后重新从 zip 解压一份；也可以加 --ferry-home <可写目录>。',
+    );
+  }
   const { startServer } = await import('./server.js');
   const port = Number(args.port || 7099);
   const server = await startServer({ env, port, log });
@@ -816,11 +861,7 @@ function stamp() {
 }
 
 function safeFileName(s) {
-  return String(s || '')
-    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 60);
+  return safeName(s, '').slice(0, 60).replace(/[. ]+$/, '');
 }
 
 function envInfo(env) {

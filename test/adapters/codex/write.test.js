@@ -17,6 +17,7 @@ import path from 'node:path';
 import { collectForExport, importConversations } from '../../../src/core/migrate.js';
 import { freshDir, makeEnv, seedClaude } from '../../helpers.js';
 import { getStore } from '../../../src/core/registry.js';
+import { block } from '../../../src/core/ucm.js';
 
 async function importToCodex() {
   const homeA = await freshDir('codex-format-src');
@@ -110,6 +111,38 @@ test('response_item：消息与工具调用都要有 id 与会话元数据', asy
     const out = items.find((it) => it.type === 'function_call_output' && it.call_id === call.call_id);
     assert.ok(out, 'function_call 没有配对的 output');
   }
+});
+
+test('reasoning：思考块写成 Codex 可读的 summary 条目', async () => {
+  const homeA = await freshDir('codex-reasoning-src');
+  const homeB = await freshDir('codex-reasoning-dst');
+  await seedClaude(homeA, '/home/u/proj');
+  const collected = await collectForExport(makeEnv(homeA), { agents: ['claude-code'], redact: false });
+  const conv = collected.conversations[0];
+  conv.messages.find((m) => m.role === 'assistant').blocks.unshift(block.thinking('先检查现有实现。'));
+
+  const out = await getStore('codex').import(makeEnv(homeB), conv, { workspace: 'D:\\work\\demo' });
+  const rollout = out.writes.find((w) => w.kind === 'codex-rollout').path;
+  const records = (await fs.readFile(rollout, 'utf8'))
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+  const reasoning = records.find((r) => r.type === 'response_item' && r.payload?.type === 'reasoning')?.payload;
+
+  assert.ok(reasoning, '思考块应写入 reasoning response_item');
+  assert.ok(reasoning.id, 'reasoning 必须有 id');
+  assert.deepEqual(reasoning.summary, [{ type: 'summary_text', text: '先检查现有实现。' }]);
+  assert.equal(typeof reasoning.internal_chat_message_metadata_passthrough, 'object');
+});
+
+test('备份范围：覆盖 Codex 索引与现有 state 数据库', async () => {
+  const home = await freshDir('codex-backup-scope');
+  await fs.mkdir(path.join(home, '.codex'), { recursive: true });
+  await fs.writeFile(path.join(home, '.codex', 'state_3.sqlite'), '');
+
+  const scope = getStore('codex').backupScope(makeEnv(home));
+  assert.ok(scope.includes(path.join(home, '.codex', 'session_index.jsonl')));
+  assert.ok(scope.includes(path.join(home, '.codex', 'state_3.sqlite')));
 });
 
 test('不伪造安全策略字段：sandbox / permission 类字段不应凭空写入', async () => {

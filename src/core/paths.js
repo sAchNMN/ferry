@@ -20,6 +20,7 @@ const SEP_ALT = /\\/g;
 export function toPosix(p) {
   if (p === undefined || p === null) return '';
   let s = String(p).replace(SEP_ALT, '/');
+  s = s.replace(/^\/\/\?\/UNC\//i, '//').replace(/^\/\/\?\/([a-z]:\/)/i, '$1');
   s = s.replace(/\/{2,}/g, (m, off) => (off === 0 || /^[a-zA-Z]:\/$/.test(s.slice(0, off)) ? m : '/'));
   if (s.length > 1 && s.endsWith('/') && !/^[a-zA-Z]:\/$/.test(s) && s !== '/') s = s.replace(/\/+$/, '');
   return s;
@@ -81,8 +82,8 @@ export function samePath(a, b) {
 
 /** `child` 是否在 `parent` 之下（含相等）。返回剩余段，不匹配返回 null。 */
 export function relativeTo(child, parent) {
-  const c = splitPath(child);
-  const p = splitPath(parent);
+  const c = splitPath(normalizePath(child));
+  const p = splitPath(normalizePath(parent));
   const cRoot = c.root.toLowerCase();
   const pRoot = p.root.toLowerCase();
   if (cRoot !== pRoot) return null;

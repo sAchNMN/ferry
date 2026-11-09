@@ -238,14 +238,22 @@ export function buildSessionLog(conv, opts = {}) {
         continue;
       }
 
+      // Codex 会把并行的多个工具调用拆成连续的多条 assistant 消息，结果统一跟在后面。
+      // 这些消息属于同一个 step，必须合并后再配对，否则前几条调用会被误判为“没有结果”。
+      const run = [message];
+      let k = i + 1;
+      while (k < group.rest.length && group.rest[k].role === 'assistant') {
+        run.push(group.rest[k]);
+        k += 1;
+      }
       const following = [];
-      let j = i + 1;
+      let j = k;
       while (j < group.rest.length && group.rest[j].role === 'tool') {
         following.push(group.rest[j]);
         j += 1;
       }
 
-      const built = buildAssistantStep(state, message, following);
+      const built = buildAssistantStep(state, run, following);
       if (!built) {
         i = j - 1;
         continue;
@@ -340,10 +348,11 @@ function groupMessages(messages, losses) {
 }
 
 /**
- * 一条 assistant 消息 → 一条 `assistant/message` 的 content，以及要接着写入的
- * `tool/call` + `tool/result` 对。只有能在紧随其后的 tool 消息里找到结果的调用才会保留。
+ * 一个 step 里的 assistant 消息（可能有多条，例如 Codex 把并行工具调用拆开写）
+ * → 一条 `assistant/message` 的 content，以及要接着写入的 `tool/call` + `tool/result` 对。
+ * 只有能在紧随其后的 tool 消息里找到结果的调用才会保留。
  */
-function buildAssistantStep(state, message, following) {
+function buildAssistantStep(state, messages, following) {
   const pool = [];
   for (const toolMessage of following) {
     for (const block of toolMessage.blocks || []) {
@@ -353,46 +362,56 @@ function buildAssistantStep(state, message, following) {
 
   const content = [];
   const calls = [];
-  const sourceModel = message.model && typeof message.model === 'object' ? message.model : null;
-  const provider = String(sourceModel?.provider || state.provider || 'deepseek');
-  const model = String(sourceModel?.id || message.model || state.model || 'deepseek-chat');
+  let provider;
+  let model;
 
-  for (const block of message.blocks || []) {
-    if (!block || typeof block !== 'object') continue;
-    if (block.type === 'text') {
-      if (block.text) content.push({ type: 'text', text: String(block.text) });
-    } else if (block.type === 'thinking') {
-      state.losses.thinking += 1;
-    } else if (block.type === 'tool_call') {
-      const name = String(block.name || 'unknown');
-      const result = takeResult(pool, block, name);
-      if (!result) {
-        state.losses.tools += 1;
-        continue;
+  for (const message of messages) {
+    const sourceModel = message.model && typeof message.model === 'object' ? message.model : null;
+    provider = sourceModel?.provider || provider;
+    model = sourceModel?.id || (typeof message.model === 'string' ? message.model : undefined) || model;
+
+    for (const block of message.blocks || []) {
+      if (!block || typeof block !== 'object') continue;
+      if (block.type === 'text') {
+        if (block.text) content.push({ type: 'text', text: String(block.text) });
+      } else if (block.type === 'thinking') {
+        state.losses.thinking += 1;
+      } else if (block.type === 'tool_call') {
+        const name = String(block.name || 'unknown');
+        const result = takeResult(pool, block, name);
+        if (!result) {
+          state.losses.tools += 1;
+          continue;
+        }
+        const id = callId(state, block.id);
+        const args = argumentsText(block.input);
+        content.push({ type: 'tool-call', id, name, arguments: args });
+        calls.push({
+          id,
+          name,
+          arguments: args,
+          output: toolOutput(result.block),
+          isError: Boolean(result.block.isError),
+          resultId: result.block.id,
+          at: result.message.createdAt || message.createdAt,
+        });
+      } else if (block.type === 'image') {
+        content.push({ type: 'text', text: `[图片：${block.name || '未命名'}]` });
+      } else if (block.type === 'file') {
+        content.push({ type: 'text', text: `[文件：${block.name || '未命名'}]` });
+      } else if (block.type === 'citation' && block.url) {
+        content.push({ type: 'text', text: `${block.title || block.url}（${block.url}）` });
       }
-      const id = callId(state, block.id);
-      const args = argumentsText(block.input);
-      content.push({ type: 'tool-call', id, name, arguments: args });
-      calls.push({
-        id,
-        name,
-        arguments: args,
-        output: toolOutput(result.block),
-        isError: Boolean(result.block.isError),
-        resultId: result.block.id,
-        at: result.message.createdAt || message.createdAt,
-      });
-    } else if (block.type === 'image') {
-      content.push({ type: 'text', text: `[图片：${block.name || '未命名'}]` });
-    } else if (block.type === 'file') {
-      content.push({ type: 'text', text: `[文件：${block.name || '未命名'}]` });
-    } else if (block.type === 'citation' && block.url) {
-      content.push({ type: 'text', text: `${block.title || block.url}（${block.url}）` });
     }
   }
 
   if (!content.length) return null;
-  return { content, calls, provider, model };
+  return {
+    content,
+    calls,
+    provider: String(provider || state.provider || 'deepseek'),
+    model: String(model || state.model || 'deepseek-chat'),
+  };
 }
 
 function takeResult(pool, call, name) {

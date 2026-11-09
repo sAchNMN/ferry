@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { defineStore } from '../core/adapter.js';
+import { samePath } from '../core/paths.js';
 import { block, createConversation, msg } from '../core/ucm.js';
 import { ensureDir, exists, shortHash, uid } from '../core/util.js';
 import { firstLine, forEachLine, readHead, writeRecord } from './_shared.js';
@@ -326,7 +327,6 @@ async function findProjectDir(env, cwd) {
   } catch {
     return null;
   }
-  const norm = (p) => String(p).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
   for (const d of dirs) {
     if (!d.isDirectory()) continue;
     const dir = path.join(root, d.name);
@@ -342,7 +342,7 @@ async function findProjectDir(env, cwd) {
     } catch {
       recorded = m[1];
     }
-    if (norm(recorded) === norm(cwd)) return dir;
+    if (samePath(recorded, cwd)) return dir;
   }
   return null;
 }

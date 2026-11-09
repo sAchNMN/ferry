@@ -3,18 +3,19 @@
  * 很多 Agent 用 SQLite 存会话：Cursor、Windsurf、Copilot Chat、Codex 的索引库……
  * 这里只做"读表结构 + 宽松写入"，把版本差异挡在适配器之外。
  */
-import { FerryError } from './util.js';
+import { FerryError, supportsNodeVersion } from './util.js';
 
 let sqliteModule;
 
 async function loadSqlite() {
   if (sqliteModule) return sqliteModule;
   try {
+    if (!supportsNodeVersion()) throw new Error('Node.js 版本不支持所需的 SQLite 能力');
     sqliteModule = await import('node:sqlite');
   } catch (err) {
-    throw new FerryError('当前 Node 不支持内置 SQLite（需要 Node >= 22.5）', {
+    throw new FerryError('当前 Node 不支持所需的内置 SQLite（需要 Node.js 22.15+（22.x）或 23.8+）', {
       code: 'ENOSQLITE',
-      hint: '请升级 Node.js 到 22.5 以上，或使用 Ferry 自带的 Node 运行时。',
+      hint: '请升级 Node.js；Ferry 需要无需实验参数并支持只读连接的 SQLite。',
       cause: err,
     });
   }

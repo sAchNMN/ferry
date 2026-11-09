@@ -9,6 +9,7 @@
  * import 会同时写 rollout、更新 session_index，并在可能时登记到 threads 表，
  * 让迁移过去的会话在 `codex resume` 与 Codex 应用历史里都直接出现。
  */
+import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { defineStore } from '../core/adapter.js';
@@ -252,7 +253,21 @@ export default defineStore({
       const ts = m.createdAt || iso;
       if (m.role === 'user' || m.role === 'assistant') {
         const texts = m.blocks.filter((b) => b.type === 'text').map((b) => b.text).filter(Boolean);
+        const thinking =
+          m.role === 'assistant' ? m.blocks.filter((b) => b.type === 'thinking').map((b) => b.text).filter(Boolean) : [];
         const calls = m.blocks.filter((b) => b.type === 'tool_call');
+        for (const text of thinking) {
+          push(
+            'response_item',
+            {
+              type: 'reasoning',
+              id: uid('rs_'),
+              summary: [{ type: 'summary_text', text }],
+              internal_chat_message_metadata_passthrough: { turn_id: turnId },
+            },
+            ts,
+          );
+        }
         if (texts.length) {
           push(
             'response_item',
@@ -358,6 +373,22 @@ export default defineStore({
       // 回滚时也靠它把台账条目摘掉。漏了它，台账里全是 null，回滚后重导会被幂等挡住。
       sessionId,
     };
+  },
+
+  backupScope(env) {
+    const base = path.join(env.home, '.codex');
+    const files = [path.join(base, 'session_index.jsonl')];
+    try {
+      files.push(
+        ...fs
+          .readdirSync(base)
+          .filter((name) => /^state_\d+\.sqlite$/.test(name))
+          .map((name) => path.join(base, name)),
+      );
+    } catch {
+      // 目标目录不存在时，createBackup 仍会记录缺失的索引文件。
+    }
+    return files;
   },
 
   resumeHint(conv, opts) {
@@ -570,11 +601,11 @@ async function registerThread(env, info) {
     if (!hasId || !hasPath) return null;
 
     const template = sampleRow(db, 'threads');
-    const prefix = template?.rollout_path?.startsWith('\\\\?\\') ? '\\\\?\\' : '';
+    const useNamespace = template?.rollout_path?.startsWith('\\\\?\\');
     const nowSec = Math.floor(info.createdAt.getTime() / 1000);
     const row = {
       id: info.id,
-      rollout_path: prefix + path.resolve(info.file),
+      rollout_path: useNamespace ? path.toNamespacedPath(path.resolve(info.file)) : path.resolve(info.file),
       created_at: nowSec,
       updated_at: nowSec,
       created_at_ms: info.createdAt.getTime(),

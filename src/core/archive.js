@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import zlib from 'node:zlib';
+import { promisify } from 'node:util';
 import { createTar, parseTar } from './tar.js';
 import { encryptBuffer, decryptBuffer, isEncrypted } from './crypto.js';
 import { validateConversation, conversationFingerprint, UCM_SCHEMA } from './ucm.js';
@@ -27,8 +28,10 @@ import {
   sha256,
   shortHash,
   safeName,
+  writeFileUnique,
 } from './util.js';
 import { assertSafeEntryName, assertSafeHash, createBudget, formatLimit, mergeLimits } from './limits.js';
+import { validateProjectFiles } from './projects.js';
 
 export const PACK_FORMAT = 'ferrypack/1';
 export const PACK_EXT = '.ferrypack';
@@ -36,6 +39,7 @@ export const PACK_EXT = '.ferrypack';
 const CONV_PREFIX = 'conversations/';
 const BLOB_PREFIX = 'blobs/';
 const PROJECT_PREFIX = 'projects/';
+const gzip = promisify(zlib.gzip);
 
 export function isPackFile(file) {
   return /\.ferrypack$/i.test(file) || /\.ferryp$/i.test(file);
@@ -82,6 +86,7 @@ export function createBlobStore() {
  * @param {ReturnType<typeof createBlobStore>|Map} [opts.blobs]
  * @param {{id:string,name:string,originalPath:string,files:{path:string,data:Buffer,bytes?:number,sha256?:string}[]}[]} [opts.projects]
  * @param {string} [opts.password]
+ * @param {(progress:object)=>void} [opts.onProgress]
  * @param {object} [opts.meta] 额外写进 manifest 的信息
  */
 export async function writePack(file, opts) {
@@ -91,6 +96,7 @@ export async function writePack(file, opts) {
     throw new FerryError('没有可导出的会话', { code: 'EEMPTY' });
   }
 
+  opts.onProgress?.({ message: '正在整理会话与附件…' });
   const entries = [];
   const manifestConvs = [];
   const usedNames = new Set();
@@ -193,17 +199,21 @@ export async function writePack(file, opts) {
     conversations: manifestConvs,
     blobs: manifestBlobs,
     projects: manifestProjects,
+    projectReport: meta.projectReport || null,
     notes: meta.notes || [],
   };
 
   entries.unshift({ name: 'manifest.json', data: Buffer.from(JSON.stringify(manifest, null, 2), 'utf8'), mtime: new Date() });
 
+  opts.onProgress?.({ message: '正在压缩归档…' });
   const tar = createTar(entries);
-  const gz = zlib.gzipSync(tar, { level: 9 });
+  const gz = await gzip(tar, { level: 9 });
+  if (password) opts.onProgress?.({ message: '正在加密归档…' });
   const output = password ? encryptBuffer(gz, password) : gz;
 
   manifest.stats.archiveBytes = output.length;
 
+  opts.onProgress?.({ message: '正在保存导出包…' });
   await ensureDir(path.dirname(path.resolve(file)));
   await fsp.writeFile(file, output);
   return { manifest, bytes: output.length, file };
@@ -376,14 +386,14 @@ export async function inspectPack(file, opts = {}) {
 /** 只解包到目录，便于人工检查 / 交给其他工具。 */
 export async function unpackTo(file, dir, opts = {}) {
   const pack = await readPack(file, opts);
+  for (const project of pack.projects || []) validateProjectFiles(project.files);
   await ensureDir(path.join(dir, 'conversations'));
   await ensureDir(path.join(dir, 'blobs'));
   await ensureDir(path.join(dir, 'projects'));
   for (const conv of pack.conversations) {
-    await fsp.writeFile(
+    await writeFileUnique(
       path.join(dir, 'conversations', `${safeName(conv.id)}.json`),
       JSON.stringify(conv, null, 2),
-      'utf8',
     );
   }
   for (const [hash, b] of pack.blobs) {

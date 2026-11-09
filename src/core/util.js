@@ -1,6 +1,6 @@
 /**
  * 基础工具：路径、文件、日志、错误、ID、格式化。
- * 设计约束：零第三方依赖，Node >= 22.5，Windows / macOS / Linux 行为一致。
+ * 设计约束：零第三方依赖，Node 22.15+（22.x）或 23.8+，Windows / macOS / Linux 行为一致。
  */
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
@@ -10,6 +10,12 @@ import crypto from 'node:crypto';
 
 // 必须与 package.json 的 version 同步，test/core/version.test.js 会强制校验
 export const VERSION = '0.2.0';
+
+/** 需要默认启用的 SQLite、readOnly 选项以及 Zstandard API。 */
+export function supportsNodeVersion(version = process.versions.node) {
+  const [major, minor] = version.split('.').map(Number);
+  return major > 23 || (major === 23 && minor >= 8) || (major === 22 && minor >= 15);
+}
 
 /* ------------------------------------------------------------------ */
 /* 错误                                                                */
@@ -130,14 +136,18 @@ export function isSubPath(parent, child) {
   return c === p || c.startsWith(p.endsWith(path.sep) ? p : p + path.sep);
 }
 
+export function isWindowsDeviceName(name) {
+  return /^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³]|conin\$|conout\$)$/i.test(String(name).split('.')[0].replace(/ +$/, ''));
+}
+
 /** 文件名安全化（保留中文与常见符号）。 */
 export function safeName(name, fallback = 'untitled') {
-  const s = String(name || '')
+  let s = String(name || '')
     .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_')
     .replace(/\s+/g, ' ')
-    .trim()
-    .replace(/[. ]+$/, '');
-  return (s || fallback).slice(0, 80);
+    .trim();
+  if (isWindowsDeviceName(s)) s = `_${s}`;
+  return s.slice(0, 80).replace(/[. ]+$/, '') || fallback;
 }
 
 export function slugify(text) {
@@ -182,6 +192,23 @@ export async function ensureDir(p) {
   return p;
 }
 
+/**
+ * 目录是否真的能写：建目录 + 写探针 + 删除。
+ * 用来在启动时提前发现"能 mkdir 但写不进去"的环境（只读盘、沙箱、安全软件拦截），
+ * 返回 null 表示可写，否则返回原始错误。
+ */
+export async function probeWritableDir(dir) {
+  try {
+    await ensureDir(dir);
+    const probe = path.join(dir, `.ferry-probe-${process.pid}-${Date.now()}.tmp`);
+    await fsp.writeFile(probe, '');
+    await fsp.unlink(probe);
+    return null;
+  } catch (err) {
+    return err;
+  }
+}
+
 export async function readText(p, fallback = NO_FALLBACK) {
   try {
     let s = await fsp.readFile(p, 'utf8');
@@ -224,6 +251,20 @@ export async function readJsonl(p) {
     }
   }
   return out;
+}
+
+/** 独占创建导出文件；遇到重名加序号，不覆盖已有内容。 */
+export async function writeFileUnique(file, data) {
+  const parsed = path.parse(file);
+  for (let n = 0; ; n++) {
+    const target = n ? path.join(parsed.dir, `${parsed.name}-${n}${parsed.ext}`) : file;
+    try {
+      await fsp.writeFile(target, data, { flag: 'wx' });
+      return target;
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+    }
+  }
 }
 
 export async function writeFileAtomic(p, data, { mode } = {}) {

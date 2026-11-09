@@ -27,12 +27,24 @@ test('项目快照：打包、校验并恢复到新目录', async () => {
   assert.equal(collected.projects.length, 1);
   assert.deepEqual(collected.projects[0].files.map((file) => file.path), ['README.md']);
   assert.equal(collected.excludedFiles, 3);
+  assert.deepEqual(collected.report, {
+    sessionCount: 1,
+    sessionsWithWorkspace: 1,
+    sessionsWithoutWorkspace: 0,
+    workspaceCount: 1,
+    projectsPacked: 1,
+    projectFiles: 1,
+    projectBytes: 6,
+    excludedFiles: 3,
+    failedProjects: 0,
+  });
 
   const packFile = path.join(await freshDir('project-pack-file'), 'bundle.ferrypack');
-  await writePack(packFile, { conversations: [conv], projects: collected.projects });
+  await writePack(packFile, { conversations: [conv], projects: collected.projects, meta: { projectReport: collected.report } });
   const pack = await readPack(packFile);
   assert.equal(pack.projects.length, 1);
   assert.equal(pack.projects[0].files[0].sha256, collected.projects[0].files[0].sha256);
+  assert.deepEqual(pack.manifest.projectReport, collected.report);
 
   const destination = await freshDir('project-restore');
   const plan = await planProjectRestore(pack.projects, pack.conversations, destination);
@@ -40,4 +52,19 @@ test('项目快照：打包、校验并恢复到新目录', async () => {
   assert.equal(restored.length, 1);
   assert.equal(await fsp.readFile(path.join(restored[0].path, 'README.md'), 'utf8'), '# demo');
   await assert.rejects(() => planProjectRestore(pack.projects, pack.conversations, destination), /目标已存在/);
+});
+
+test('项目快照报告：统计缺少工作区和不可读目录', async () => {
+  const missingPath = path.join(await freshDir('missing-project-parent'), 'not-found');
+  const collected = await collectProjectSnapshots([
+    createConversation({ workspace: { cwd: missingPath } }),
+    createConversation({}),
+  ]);
+
+  assert.equal(collected.report.sessionCount, 2);
+  assert.equal(collected.report.sessionsWithoutWorkspace, 1);
+  assert.equal(collected.report.workspaceCount, 1);
+  assert.equal(collected.report.projectsPacked, 0);
+  assert.equal(collected.report.failedProjects, 1);
+  assert.match(collected.warnings[0], /项目目录不可读取/);
 });

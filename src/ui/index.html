@@ -5,62 +5,104 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Ferry · AI 会话摆渡</title>
     <link rel="stylesheet" href="/assets/style.css" />
-    <link
-      rel="icon"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%235b6cff'/%3E%3Cpath d='M14 38h36l-6 12H20z' fill='white'/%3E%3Cpath d='M32 12v22M32 16l10 8M32 16l-10 8' stroke='white' stroke-width='4' stroke-linecap='round' fill='none'/%3E%3C/svg%3E"
-    />
+    <link rel="icon" href="/favicon.ico" sizes="any" />
   </head>
   <body>
     <div class="app">
       <aside class="sidebar">
         <div class="brand">
-          <div class="logo">⛴</div>
+          <div class="logo" aria-hidden="true">↗</div>
           <div>
             <div class="brand-name">Ferry</div>
             <div class="brand-sub">AI 会话摆渡</div>
           </div>
         </div>
 
+        <div class="workspace-label">
+          <span>本机工作区</span>
+          <span class="workspace-status"><i></i>在线</span>
+        </div>
+
         <nav class="nav" id="nav">
           <button class="nav-item active" data-view="dashboard">
-            <span class="ico">◎</span><span>总览</span>
+            <span class="ico" aria-hidden="true">◉</span><span>总览</span>
           </button>
           <button class="nav-item" data-view="export">
-            <span class="ico">↗</span><span>导出</span>
+            <span class="ico" aria-hidden="true">↑</span><span>导出</span>
           </button>
           <button class="nav-item" data-view="import">
-            <span class="ico">↙</span><span>导入</span>
+            <span class="ico" aria-hidden="true">↓</span><span>导入</span>
           </button>
           <button class="nav-item" data-view="archive">
-            <span class="ico">▤</span><span>归档</span>
+            <span class="ico" aria-hidden="true">▣</span><span>归档</span>
           </button>
           <button class="nav-item" data-view="settings">
-            <span class="ico">⚙</span><span>设置</span>
+            <span class="ico" aria-hidden="true">⌘</span><span>设置</span>
           </button>
         </nav>
 
+        <div class="sidebar-divider"></div>
+        <div class="sidebar-summary">
+          <span class="summary-label">数据范围</span>
+          <strong>仅此设备</strong>
+          <span class="summary-detail">不会上传到云端</span>
+        </div>
+
         <div class="sidebar-foot">
           <div class="env" id="env-line">检测环境中…</div>
-          <div class="privacy">数据只在本机处理<br />不上传任何服务器</div>
+          <div class="privacy"><span aria-hidden="true">●</span> 数据只在本机处理</div>
         </div>
       </aside>
 
       <main class="main">
         <header class="topbar">
-          <div>
+          <div class="topbar-copy">
+            <div class="eyebrow">FERRY / WORKSPACE</div>
             <h1 id="page-title">总览</h1>
             <p class="subtitle" id="page-sub">看看这台电脑上装了多少个 AI Agent，存了多少对话。</p>
           </div>
-          <div class="topbar-actions" id="topbar-actions"></div>
+          <div class="topbar-right">
+            <div class="local-chip"><i></i>本地模式</div>
+            <div class="topbar-actions" id="topbar-actions"></div>
+          </div>
         </header>
 
         <section class="view" id="view-dashboard">
-          <div class="stat-row" id="stat-row"></div>
-          <div class="section-head">
-            <h2>本机 Agent</h2>
-            <button class="btn ghost sm" id="btn-rescan">重新扫描</button>
+          <div class="overview-intro">
+            <div class="overview-copy">
+              <div class="eyebrow">本机数据工作台</div>
+              <h2>把会话带到下一台电脑。</h2>
+              <p>扫描本机 Agent，选择要带走的内容，生成可加密的 Ferry 归档。</p>
+            </div>
+            <div class="overview-actions">
+              <button class="btn primary" data-goto="export"><span aria-hidden="true">↑</span> 开始导出</button>
+              <button class="btn soft" data-goto="import"><span aria-hidden="true">↓</span> 导入归档</button>
+            </div>
           </div>
-          <div class="agent-grid" id="agent-grid"></div>
+
+          <div class="stat-row" id="stat-row"></div>
+          <div class="dashboard-grid">
+            <div class="agents-section">
+              <div class="section-head">
+                <div>
+                  <div class="eyebrow">CONNECTED SOURCES</div>
+                  <h2>本机 Agent</h2>
+                </div>
+                <button class="btn ghost sm" id="btn-rescan"><span aria-hidden="true">↻</span> 重新扫描</button>
+              </div>
+              <div class="agent-grid" id="agent-grid"></div>
+            </div>
+            <aside class="insight-panel">
+              <div class="eyebrow">迁移流程</div>
+              <h3>三步完成迁移</h3>
+              <ol class="step-list">
+                <li><span>01</span><div><b>扫描</b><small>识别本机的会话存储</small></div></li>
+                <li><span>02</span><div><b>导出</b><small>生成可加密的归档文件</small></div></li>
+                <li><span>03</span><div><b>导入</b><small>写回目标 Agent 并自动备份</small></div></li>
+              </ol>
+              <div class="security-note"><span aria-hidden="true">⌁</span><div><b>本地优先</b><small>数据只在这台电脑上处理</small></div></div>
+            </aside>
+          </div>
           <div class="callout" id="scan-hint"></div>
         </section>
 
@@ -112,6 +154,10 @@
                 <input type="checkbox" id="export-projects" />
                 <em>打包会话引用的项目；自动排除 .git、依赖目录和凭据</em>
               </label>
+              <label class="field" id="exclude-field" style="display: none">
+                <span>额外排除</span>
+                <input id="export-exclude" type="text" placeholder="逗号分隔，如 .tmp/, dist/, *.log" />
+              </label>
               <label class="field" id="password-field" style="display: none">
                 <span>密码</span>
                 <input id="export-password" type="password" placeholder="至少 8 位，建议 12 位以上" />
@@ -121,9 +167,17 @@
               <button class="btn primary" id="btn-export">打包导出</button>
               <span class="hint" id="export-hint"></span>
             </div>
+            <div id="export-progress" class="export-progress hidden">
+              <div id="export-progress-label" role="status" aria-live="polite"></div>
+              <progress id="export-progress-bar" aria-labelledby="export-progress-label"></progress>
+            </div>
           </div>
 
           <div class="panel hidden" id="export-result"></div>
+          <div class="panel">
+            <h2>已导出的包</h2>
+            <div id="export-list"><p class="muted">进入导出页后加载。</p></div>
+          </div>
         </section>
 
         <section class="view hidden" id="view-import">
@@ -200,6 +254,12 @@
           <div class="panel">
             <h2>路径与目录</h2>
             <div class="kv" id="settings-env"></div>
+          </div>
+          <div class="panel">
+            <h2>清理软件缓存</h2>
+            <p class="muted">仅清理 Ferry 上传临时文件。保留导出包、原始会话、自动备份、配置及导入记录；清理后需重新选择待导入文件。</p>
+            <p id="cache-info" class="muted small"></p>
+            <button class="btn ghost" id="btn-clear-cache">清理缓存</button>
           </div>
           <div class="panel">
             <h2>支持的 Agent</h2>

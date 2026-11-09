@@ -1,0 +1,11 @@
+# Ferry 项目快照排除（Ferry 默认已排除 .git、node_modules、.tmp、__pycache__ 等）
+# 目的：把本仓库的快照控制在 18000 文件以内，别把自己的构建产物和旧归档再打进去。
+dist/
+*.ferrypack
+ferry-handoff/
+ferry-converted/
+
+# 编辑器 / 本地 Agent 状态
+.idea/
+.vscode/
+.workbuddy/

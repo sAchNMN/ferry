@@ -103,6 +103,7 @@ function setView(view) {
   $('#page-title').textContent = title;
   $('#page-sub').textContent = sub;
   $('#topbar-actions').innerHTML = '';
+  if (view === 'export') loadExports();
   if (view === 'archive') loadBackups();
   if (view === 'settings') loadSettings();
 }
@@ -250,6 +251,58 @@ $('#export-encrypt').addEventListener('change', (e) => {
   if (e.target.checked) $('#export-password').focus();
 });
 
+$('#export-projects').addEventListener('change', (e) => {
+  $('#exclude-field').style.display = e.target.checked ? '' : 'none';
+});
+
+async function exportWithProgress(body, onProgress) {
+  const response = await fetch('/api/export', {
+    method: 'POST',
+    headers: { 'x-ferry-token': TOKEN, 'content-type': 'application/json', accept: 'application/x-ndjson' },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw new Error((await response.json()).error || '导出失败');
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = '';
+  let result;
+  const consume = (line) => {
+    if (!line.trim()) return;
+    const event = JSON.parse(line);
+    if (event.type === 'error') throw new Error(event.error);
+    if (event.type === 'progress') onProgress(event);
+    if (event.type === 'result') result = event.result;
+  };
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += value;
+      let end;
+      while ((end = buffer.indexOf('\n')) >= 0) {
+        consume(buffer.slice(0, end));
+        buffer = buffer.slice(end + 1);
+      }
+    }
+    consume(buffer);
+  } finally {
+    reader.releaseLock();
+  }
+  if (!result) throw new Error('导出连接中断，请在已导出的包中检查结果后重试');
+  return result;
+}
+
+function showExportProgress({ message, done, total }) {
+  $('#export-progress').classList.remove('hidden');
+  $('#export-progress-label').textContent = message;
+  const bar = $('#export-progress-bar');
+  if (total > 0) {
+    bar.max = total;
+    bar.value = done;
+  } else {
+    bar.removeAttribute('value');
+  }
+}
+
 $('#btn-export').addEventListener('click', async () => {
   const agents = [...state.selectedExport];
   if (!agents.length) {
@@ -266,22 +319,25 @@ $('#btn-export').addEventListener('click', async () => {
   btn.disabled = true;
   btn.innerHTML = spinner('正在打包…');
   $('#export-hint').textContent = '会话较多时需要一点时间，请勿关闭页面。';
+  $('#export-result').classList.add('hidden');
+  showExportProgress({ message: '正在开始导出…' });
   try {
-    const res = await api('/api/export', {
-      method: 'POST',
-      body: {
-        agents,
-        since: $('#export-since').value || undefined,
-        limit: Number($('#export-limit').value) || 0,
-        label: $('#export-label').value || undefined,
-        redact: $('#export-redact').checked,
-        projects: $('#export-projects').checked,
-        password: encrypt ? password : undefined,
-      },
-    });
+    const res = await exportWithProgress({
+      agents,
+      since: $('#export-since').value || undefined,
+      limit: Number($('#export-limit').value) || 0,
+      label: $('#export-label').value || undefined,
+      redact: $('#export-redact').checked,
+      projects: $('#export-projects').checked,
+      excludePaths: parseExcludeInput($('#export-exclude').value),
+      password: encrypt ? password : undefined,
+    }, showExportProgress);
+    showExportProgress({ message: '导出完成 · 100%', done: 1, total: 1 });
     renderExportResult(res, encrypt);
+    await loadExports();
     toast(`已导出 ${res.summary.conversations} 个会话`, 'ok');
   } catch (err) {
+    $('#export-progress').classList.add('hidden');
     toast(err.message, 'err', 7000);
   } finally {
     btn.disabled = false;
@@ -290,9 +346,19 @@ $('#btn-export').addEventListener('click', async () => {
   }
 });
 
+/** 界面上用逗号、分号或换行分隔多条排除规则。 */
+function parseExcludeInput(value) {
+  const items = String(value || '')
+    .split(/[,;，；\n]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return items.length ? items : undefined;
+}
+
 function renderExportResult(res, encrypted) {
   const panel = $('#export-result');
   panel.classList.remove('hidden');
+  panel.dataset.file = res.file;
   panel.innerHTML = `
     <h2>导出完成</h2>
     <div class="file-info">
@@ -301,7 +367,7 @@ function renderExportResult(res, encrypted) {
         <div style="font-weight:600">${esc(res.file)}</div>
         <div style="color:var(--text-3);font-size:11.5px">${esc(res.summary.text)} · ${fmtBytes(res.bytes)}${encrypted ? ' · AES-256-GCM 加密' : ''}</div>
       </div>
-      <a class="btn primary sm" href="/api/download?file=${encodeURIComponent(res.file)}" download>下载</a>
+      ${exportActions(res.file)}
     </div>
     ${
       res.errors?.length
@@ -320,11 +386,55 @@ function renderExportResult(res, encrypted) {
     <div class="callout" style="margin-top:14px">
       把文件拷到新电脑，打开 Ferry → 导入，选择目标 Agent。<br />
       ${res.projects?.length ? `已包含 ${res.projects.length} 个项目；导入时可指定“恢复项目文件到”。<br />` : ''}
+      ${res.projectReport ? `项目快照报告：识别 ${res.projectReport.workspaceCount} 个工作目录，成功打包 ${res.projectReport.projectsPacked} 个项目、${res.projectReport.projectFiles} 个文件（${fmtBytes(res.projectReport.projectBytes)}）；${res.projectReport.sessionsWithoutWorkspace} 个会话没有工作区路径，排除 ${res.projectReport.excludedFiles} 个条目${res.projectReport.failedProjects ? `，${res.projectReport.failedProjects} 个目录读取失败` : ''}。<br />` : ''}
       ${res.projectExcluded ? `为安全和体积考虑，已排除 ${res.projectExcluded} 个凭据、依赖目录或链接。<br />` : ''}
       ${res.projectWarnings?.length ? `注意：${esc(res.projectWarnings.join('；'))}<br />` : ''}
-      本机保存位置：<code>${esc(state.state.ferryHome)}\\exports</code>
+      本机保存位置：<code>${esc(res.directory)}</code>
     </div>`;
 }
+
+function exportActions(file) {
+  return `<div class="actions export-file-actions">
+    <button class="btn primary sm" data-open-export="${esc(file)}">打开所在文件夹</button>
+    <button class="btn ghost sm" data-delete-export="${esc(file)}">删除包</button>
+  </div>`;
+}
+
+async function loadExports() {
+  const box = $('#export-list');
+  try {
+    const res = await api('/api/exports');
+    box.innerHTML = `<p class="muted small">保存位置：<code>${esc(res.dir)}</code></p>` +
+      (res.items.length ? res.items.map((item) => `<div class="file-info">
+        <div class="export-file-name"><b>${esc(item.file)}</b><div class="muted small">${fmtTime(item.createdAt)} · ${fmtBytes(item.bytes)}</div></div>
+        ${exportActions(item.file)}
+      </div>`).join('') : '<p class="muted">暂无导出的包。</p>');
+  } catch (err) {
+    box.textContent = `读取导出包失败：${err.message}`;
+  }
+}
+
+$('#view-export').addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-open-export], [data-delete-export]');
+  if (!button || button.disabled) return;
+  const deleting = button.hasAttribute('data-delete-export');
+  const file = deleting ? button.dataset.deleteExport : button.dataset.openExport;
+  if (deleting && !confirm(`确认永久删除导出包 ${file}？此操作不影响原始会话和导入备份。`)) return;
+  button.disabled = true;
+  try {
+    await api(deleting ? '/api/exports/delete' : '/api/exports/open', { method: 'POST', body: { file } });
+    if (deleting) {
+      if ($('#export-result').dataset.file === file) $('#export-result').classList.add('hidden');
+      await loadExports();
+    }
+    toast(deleting ? '导出包已删除' : '已打开所在文件夹', 'ok');
+  } catch (err) {
+    // 打不开时错误里带着目录路径，留足时间让用户看清/复制。
+    toast(err.message, 'err', 7000);
+  } finally {
+    button.disabled = false;
+  }
+});
 
 /* ------------------------------------------------------------------ */
 /* 导入                                                               */
@@ -511,12 +621,21 @@ function renderImportResult(res, dryRun) {
             <div class="tt">${esc(r.title)}</div>
             <div class="n">${esc(r.error || r.workspace || '')}</div>
             ${(r.notes || []).map((n) => `<div class="n">· ${esc(n)}</div>`).join('')}
+            ${(r.losses || [])
+              .map((loss) => {
+                const detail = typeof loss === 'string' ? loss : loss.detail || loss.kind || '未说明的迁移损失';
+                return `<div class="n" style="color:var(--yellow)">⚠ ${esc(detail)}</div>`;
+              })
+              .join('')}
+            ${r.fidelity ? `<div class="n">计划精度：${esc(r.fidelity)}</div>` : ''}
+            ${r.stateDigest ? `<div class="n">状态摘要：<code>${esc(r.stateDigest)}</code></div>` : ''}
             ${r.resume ? `<pre class="cmd">cd "${esc(r.resume.cwd)}"&#10;${esc(r.resume.command)}</pre>` : ''}
           </div>
         </div>`,
       )
       .join('')}
     ${res.backup && !dryRun ? `<p class="muted small" style="margin-top:12px">已自动备份：<code>${esc(res.backup)}</code>，可在「归档」页回滚。</p>` : ''}
+    ${res.losses?.length ? `<div class="callout" style="margin-top:12px">本次迁移记录 ${res.losses.length} 条损失或降级，已在各会话下展开。</div>` : ''}
     ${res.projects?.length ? `<div class="callout" style="margin-top:12px">${dryRun ? '将恢复' : '已恢复'} ${res.projects.length} 个项目目录：${res.projects.map((p) => `<code>${esc(p.path)}</code>`).join('、')}</div>` : ''}
     ${!dryRun ? `<div class="callout" style="margin-top:12px">${esc(res.resumeHint || '重启目标应用后，在历史列表里即可看到并继续。')}</div>` : ''}`;
   panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -565,7 +684,39 @@ async function loadBackups() {
 /* 设置                                                               */
 /* ------------------------------------------------------------------ */
 
+async function loadCache() {
+  try {
+    const cache = await api('/api/cache');
+    $('#cache-info').textContent = `上传临时文件：${cache.files} 个 · ${fmtBytes(cache.bytes)}`;
+  } catch (err) {
+    $('#cache-info').textContent = `读取缓存失败：${err.message}`;
+  }
+}
+
+$('#btn-clear-cache').addEventListener('click', async () => {
+  if (!confirm('确认清理上传临时文件？当前待导入的文件需要重新选择。不会删除导出包、原始会话、备份、配置或导入记录。')) return;
+  const button = $('#btn-clear-cache');
+  button.disabled = true;
+  try {
+    const result = await api('/api/cache/clear', { method: 'POST', body: {} });
+    state.upload = null;
+    state.pack = null;
+    state.password = '';
+    state.selectedConvs.clear();
+    $('#file-input').value = '';
+    $('#import-password').value = '';
+    ['file-info', 'pack-panel', 'import-target-panel', 'import-result', 'import-password-row'].forEach((id) => $(`#${id}`).classList.add('hidden'));
+    await loadCache();
+    toast(`已清理 ${result.files} 个临时文件，释放 ${fmtBytes(result.bytes)}`, 'ok');
+  } catch (err) {
+    toast(err.message, 'err');
+  } finally {
+    button.disabled = false;
+  }
+});
+
 async function loadSettings() {
+  await loadCache();
   const s = state.state;
   $('#settings-env').innerHTML = [
     ['版本', `Ferry ${s.version}`],

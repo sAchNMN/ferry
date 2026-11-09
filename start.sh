@@ -3,8 +3,8 @@
 set -e
 cd "$(dirname "$0")"
 
-if ! command -v node >/dev/null 2>&1; then
-  echo "[Ferry] 需要 Node.js 22.5 或更高版本：https://nodejs.org/"
+if ! command -v node >/dev/null 2>&1 || ! node -e "const [major, minor] = process.versions.node.split('.').map(Number); process.exit(major > 23 || (major === 23 && minor >= 8) || (major === 22 && minor >= 15) ? 0 : 1)" >/dev/null 2>&1; then
+  echo "[Ferry] 需要 Node.js 22.15+（22.x）或 23.8+：https://nodejs.org/"
   exit 1
 fi
 

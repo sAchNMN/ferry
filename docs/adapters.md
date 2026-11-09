@@ -154,7 +154,7 @@ const conv = await getStore('my-agent').read(env, ref, { blobs: new Map() });
 至少覆盖：扫描数量、标题、工作区、工具调用、时间戳；有导入的还要覆盖"导入 → 重新扫描能看见"。
 
 ```bash
-# 默认：进程隔离，Node 22.5+ 均可运行
+# 默认：进程隔离，Node 22.15+（22.x）或 23.8+ 可运行
 node --test test/core.test.js test/adapters.test.js
 
 # 受限环境（不允许 Node 测试器 spawn 子进程）且 Node ≥ 24 时用这个

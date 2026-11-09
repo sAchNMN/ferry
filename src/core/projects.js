@@ -4,11 +4,11 @@
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 
+import { createIgnoreMatcher, readProjectIgnores } from './ignore.js';
 import { assertSafeEntryName } from './limits.js';
 import { samePath } from './paths.js';
-import { safeName, sha256 } from './util.js';
+import { isWindowsDeviceName, safeName, sha256 } from './util.js';
 
-const EXCLUDED_DIRS = new Set(['.git', '.hg', '.svn', 'node_modules', '.venv', 'venv', '__pycache__']);
 const MAX_PROJECT_FILES = 18000;
 const MAX_PROJECT_BYTES = 2 * 1024 ** 3;
 
@@ -29,13 +29,19 @@ function isCredentialFile(name) {
 }
 
 /**
- * @returns {Promise<{projects: object[], warnings: string[], excludedFiles: number}>}
+ * @param {object[]} conversations
+ * @param {{excludes?: string[]}} [options] 追加的排除 glob（.ferryignore 之外）
+ * @returns {Promise<{projects: object[], warnings: string[], excludedFiles: number, failedProjects: object[], report: object}>}
  */
-export async function collectProjectSnapshots(conversations) {
+export async function collectProjectSnapshots(conversations, options = {}) {
+  const extraExcludes = Array.isArray(options.excludes) ? options.excludes : [];
+  const sessionCount = Array.isArray(conversations) ? conversations.length : 0;
   const roots = new Map();
+  let sessionsWithWorkspace = 0;
   for (const conv of conversations || []) {
     const originalPath = conv.workspace?.cwd || conv.workspace?.roots?.[0];
     if (!originalPath) continue;
+    sessionsWithWorkspace++;
     const fullPath = path.resolve(originalPath);
     const key = process.platform === 'win32' ? fullPath.toLowerCase() : fullPath;
     if (!roots.has(key)) roots.set(key, { fullPath, originalPath });
@@ -46,19 +52,26 @@ export async function collectProjectSnapshots(conversations) {
   let excludedFiles = 0;
   let totalBytes = 0;
   let totalFiles = 0;
+  const failedProjects = [];
 
   for (const { fullPath, originalPath } of roots.values()) {
     let stat;
     try {
       stat = await fsp.lstat(fullPath);
     } catch (err) {
+      failedProjects.push({ path: originalPath, reason: err.message });
       warnings.push(`项目目录不可读取，已跳过：${originalPath}（${err.message}）`);
       continue;
     }
     if (!stat.isDirectory()) {
+      failedProjects.push({ path: originalPath, reason: '路径不是目录' });
       warnings.push(`项目路径不是目录，已跳过：${originalPath}`);
       continue;
     }
+
+    const ignore = await readProjectIgnores(fullPath);
+    for (const warning of ignore.warnings) warnings.push(warning);
+    const isIgnored = createIgnoreMatcher({ rules: ignore.rules, extra: extraExcludes });
 
     const files = [];
     let rootBytes = 0;
@@ -72,11 +85,12 @@ export async function collectProjectSnapshots(conversations) {
           rootExcluded++;
           continue;
         }
-        if (entry.isDirectory()) {
-          if (EXCLUDED_DIRS.has(entry.name.toLowerCase())) {
-            rootExcluded++;
-            continue;
-          }
+        const isDirectory = entry.isDirectory();
+        if (isIgnored(childRelative, isDirectory)) {
+          rootExcluded++;
+          continue;
+        }
+        if (isDirectory) {
           await walk(path.join(dir, entry.name), childRelative);
           continue;
         }
@@ -103,6 +117,7 @@ export async function collectProjectSnapshots(conversations) {
     try {
       await walk(fullPath);
     } catch (err) {
+      failedProjects.push({ path: originalPath, reason: err.message });
       warnings.push(`项目目录未能完整读取，已跳过：${originalPath}（${err.message}）`);
       continue;
     }
@@ -119,7 +134,52 @@ export async function collectProjectSnapshots(conversations) {
     excludedFiles += rootExcluded;
   }
 
-  return { projects, warnings, excludedFiles };
+  return {
+    projects,
+    warnings,
+    excludedFiles,
+    failedProjects,
+    report: {
+      sessionCount,
+      sessionsWithWorkspace,
+      sessionsWithoutWorkspace: sessionCount - sessionsWithWorkspace,
+      workspaceCount: roots.size,
+      projectsPacked: projects.length,
+      projectFiles: totalFiles,
+      projectBytes: totalBytes,
+      excludedFiles,
+      failedProjects: failedProjects.length,
+    },
+  };
+}
+
+/** 在写盘前检查项目文件名和文件/目录冲突，保留源文件名，不静默改名。 */
+export function validateProjectFiles(files, platform = process.platform) {
+  const paths = new Set();
+  for (const file of files || []) {
+    assertSafeEntryName(file.path);
+    const parts = file.path.split('/');
+    if (parts.some((part) => !part || part === '.' || part === '..')) {
+      throw new Error(`项目文件相对路径不安全：${file.path}`);
+    }
+    if (platform === 'win32' && parts.some((part) =>
+      /[<>:"|?*\u0000-\u001f]/.test(part) || /[. ]$/.test(part) || part.length > 255 || isWindowsDeviceName(part),
+    )) {
+      throw new Error(`项目文件名不能在 Windows 恢复：${file.path}`);
+    }
+    const key = platform === 'win32' ? file.path.toLowerCase() : file.path;
+    if (paths.has(key)) throw new Error(`项目文件路径重复：${file.path}`);
+    paths.add(key);
+  }
+  for (const filePath of paths) {
+    const parents = filePath.split('/');
+    parents.pop();
+    while (parents.length) {
+      const parent = parents.join('/');
+      if (paths.has(parent)) throw new Error(`项目文件与目录冲突：${parent}`);
+      parents.pop();
+    }
+  }
 }
 
 /** 计算项目解包位置和旧路径到新路径的映射，不写盘。 */
@@ -151,12 +211,7 @@ export async function planProjectRestore(projects, conversations, directory) {
       if (err.code !== 'ENOENT') throw err;
     }
 
-    for (const file of project.files || []) {
-      assertSafeEntryName(file.path);
-      if (!file.path.split('/').every((part) => part && part !== '.' && part !== '..')) {
-        throw new Error(`项目文件相对路径不安全：${file.path}`);
-      }
-    }
+    validateProjectFiles(project.files);
     targets.push({ ...project, target });
     mappings.push({ from: project.originalPath, to: target });
   }

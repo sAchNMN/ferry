@@ -7,7 +7,7 @@
     "ferry": "./bin/ferry.js"
   },
   "engines": {
-    "node": ">=22.5.0"
+    "node": "^22.15.0 || >=23.8.0"
   },
   "scripts": {
     "start": "node bin/ferry.js",
@@ -16,9 +16,11 @@
     "test:noiso": "node --test --test-isolation=none \"test/**/*.test.js\"",
     "test:watch": "node --test --watch \"test/**/*.test.js\"",
     "selftest": "node bin/ferry.js doctor",
-    "package": "node scripts/package.mjs"
+    "package": "node scripts/package.mjs",
+    "exe": "node scripts/build-exe.mjs"
   },
   "files": [
+    "assets",
     "bin",
     "src",
     "docs",
@@ -36,5 +38,9 @@
     "backup"
   ],
   "license": "MIT",
-  "private": true
+  "private": true,
+  "devDependencies": {
+    "postject": "^1.0.0-alpha.6",
+    "rcedit": "^5.0.2"
+  }
 }

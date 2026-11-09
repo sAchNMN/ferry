@@ -13,10 +13,12 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { defineStore } from '../core/adapter.js';
+import { samePath } from '../core/paths.js';
 import { block, createConversation, msg } from '../core/ucm.js';
 import { ensureDir, exists, shortHash, uid } from '../core/util.js';
 import { closeQuietly, insertLoose, openDb, tableExists } from '../core/sqlite.js';
 import { findExistingDir, firstLine, readJsonSafe, writeRecord } from './_shared.js';
+import { decodeFileUri, encodeFileUri } from '../core/file-url.js';
 
 export default defineStore({
   id: 'vscode-copilot',
@@ -432,38 +434,18 @@ function responseBlocks(req) {
 /* 导入                                                                */
 /* ------------------------------------------------------------------ */
 
-function encodeFileUri(p) {
-  const normalized = String(p).replace(/\\/g, '/');
-  const withSlash = normalized.startsWith('/') ? normalized : `/${normalized}`;
-  return `file://${encodeURI(withSlash).replace(/:/g, '%3A')}`;
-}
-
-function decodeFileUri(uri, platform = process.platform) {
-  if (!uri || typeof uri !== 'string') return '';
-  if (!uri.startsWith('file://')) return '';
-  let s = uri.slice('file://'.length);
-  try {
-    s = decodeURIComponent(s);
-  } catch {
-    /* keep */
-  }
-  s = s.replace(/^\/([a-zA-Z])%?3?[aA]?\//, '/$1:/'); // 容错
-  s = s.replace(/^\/([a-zA-Z]):/, '$1:');
-  return platform === 'win32' ? s.replace(/\//g, '\\') : s;
-}
-
 export async function resolveWorkspaceDir(userDir, cwd, { create = true, platform = process.platform } = {}) {
   const wsRoot = path.join(userDir, 'workspaceStorage');
   if (create) await ensureDir(wsRoot);
   const match = await findExistingDir(wsRoot, async (dir) => {
     const j = await readJsonSafe(path.join(dir, 'workspace.json'));
     const folder = decodeFileUri(j?.folder || j?.workspace || '', platform);
-    return folder && samePathLoose(folder, cwd);
+    return folder && samePath(folder, cwd);
   });
   if (match) {
     return { dir: match, created: false, sessionsDir: path.join(match, 'chatSessions') };
   }
-  const uri = encodeFileUri(cwd);
+  const uri = encodeFileUri(cwd, platform);
   const hash = crypto.createHash('md5').update(uri).digest('hex');
   const dir = path.join(wsRoot, hash);
   if (create) {
@@ -471,11 +453,6 @@ export async function resolveWorkspaceDir(userDir, cwd, { create = true, platfor
     await fsp.writeFile(path.join(dir, 'workspace.json'), JSON.stringify({ folder: uri }), 'utf8');
   }
   return { dir, created: true, sessionsDir: path.join(dir, 'chatSessions') };
-}
-
-function samePathLoose(a, b) {
-  const norm = (p) => String(p).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-  return norm(a) === norm(b);
 }
 
 export async function findTemplateState(workspaceDir) {
